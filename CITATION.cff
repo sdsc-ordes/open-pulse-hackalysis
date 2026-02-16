@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Open Pulse - Hackathon Analysis"
+
+authors:
+  - family-names: Tir Raazia
+    given-names: Eisha
+    orcid: "..."
+    affiliation: "SDSC - Swiss Data Science Center"
+date-released: 2026-39-13
+version: "0.0.1"
+doi: ""
+url: https://github.com/sdsc-ordes/open-pulse-hackathon-analysis
+repository-code: https://github.com/sdsc-ordes/open-pulse-hackathon-analysis
+keywords: []
+license: 

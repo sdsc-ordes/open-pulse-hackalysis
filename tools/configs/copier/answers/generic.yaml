@@ -1,0 +1,17 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_src_path: src/generic
+project_affiliation: SDSC - Swiss Data Science Center
+project_authors:
+-   email: eisha.raazia@epfl.ch
+    first_name: Eisha
+    last_name: Tir Raazia
+project_description: Analyse performance of open source and hackathon repositories
+project_hosts:
+-   host: github.com
+    organization: sdsc-ordes
+    repo: open-pulse-hackathon-analysis
+project_language: python
+project_license: ''
+project_name: Open Pulse - Hackathon Analysis
+project_url: https://github.com/sdsc-ordes/open-pulse-hackathon-analysis
+project_version: 0.0.1
