@@ -870,9 +870,11 @@ name = "open-pulse"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "beautifulsoup4" },
     { name = "pandas" },
     { name = "pydantic" },
     { name = "pytest" },
+    { name = "requests" },
     { name = "typer" },
 ]
 
@@ -883,9 +885,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "beautifulsoup4", specifier = ">=4.12.0" },
     { name = "pandas", specifier = ">=3.0.0" },
     { name = "pydantic", specifier = ">=2.10.6" },
     { name = "pytest", specifier = ">=8.4.2" },
+    { name = "requests", specifier = ">=2.31.0" },
     { name = "typer", specifier = ">=0.9.0" },
 ]
 
