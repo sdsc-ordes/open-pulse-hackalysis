@@ -498,16 +498,28 @@ def process_project_data(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     typer.echo(f"      → Processing {len(projects)} projects")
 
     processed_projects = []
-    seen_titles = set()
+    seen_keys = set()
 
     for project in projects:
-        # Remove duplicates based on title
+        # Remove duplicates based on multiple fields
         title = project.get("title", "")
-        if title and title in seen_titles:
-            continue
+        description = project.get("description", "")
+        url = project.get("url", "")
+        team = project.get("team", []) or []
+        team_key = ",".join([member.strip() for member in team if member]).lower()
+        dedupe_key = "|".join(
+            [
+                _normalize_title(title),
+                _normalize_title(description),
+                url.strip().lower(),
+                team_key,
+            ]
+        )
 
-        if title:
-            seen_titles.add(title)
+        if any(dedupe_key):
+            if dedupe_key in seen_keys:
+                continue
+            seen_keys.add(dedupe_key)
 
         # Clean and validate data
         processed_project = {
