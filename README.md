@@ -8,14 +8,12 @@
 <p align="center">
 </p>
 
-
 [![Current Release](https://img.shields.io/github/release/sdsc-ordes/open-pulse-hackathon-analysis.svg?label=release)](https://github.com/sdsc-ordes/open-pulse-hackathon-analysis/releases/latest)
 [![Pipeline Status](https://img.shields.io/github/actions/workflow/status/sdsc-ordes/open-pulse-hackathon-analysis/normal.yaml?label=ci)](https://github.com/sdsc-ordes/open-pulse-hackathon-analysis/actions/workflows/normal.yaml)
 
 **Authors:**
 
 - [Eisha Tir Raazia](mailto:eisha.raazia@epfl.ch)
-
 
 ## Installation
 
@@ -26,11 +24,25 @@ Describe the installation instruction here.
 ### Extract Hackathon Data
 
 Extract data from LauzHack:
+
 ```bash
 just hackalysis --output_folder ./data --hackathon_provider lauzhack
 ```
 
+Extract specific LauzHack years with the CLI:
+
+```bash
+uv run hackalysis -o ./data -p lauzhack -y 2023,2024,2025
+```
+
+````
+Extract data without specifying the years will default to extracting all available years for the specified provider.
+```bash
+uv run hackalysis -o ./data -p lauzhack
+````
+
 Extract data from Devpost:
+
 ```bash
 just hackalysis --output_folder ./data --hackathon_provider devpost
 ```
