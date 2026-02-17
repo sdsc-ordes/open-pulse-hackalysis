@@ -10,12 +10,84 @@ import requests
 import typer
 from bs4 import BeautifulSoup
 
+# Constants
+DEFAULT_LOCATION = "EPFL, Lausanne, Switzerland"
+BASE_URL = "https://lauzhack.com"
+
 
 def _normalize_title(title: Optional[str]) -> str:
     if not title:
         return ""
     normalized = re.sub(r"\s+", " ", title).strip().lower()
     return normalized
+
+
+def _extract_footer_team_and_url(
+    footer_elem: Optional[Any],
+) -> tuple[Optional[str], Optional[List[str]]]:
+    """Extract URL and team members from footer element.
+
+    Args:
+        footer_elem: BeautifulSoup footer element
+
+    Returns:
+        Tuple of (url, team_list) or (None, None) if not found
+    """
+    if not footer_elem:
+        return None, None
+
+    # Extract project link first
+    link_elem = footer_elem.find("a")
+    url = None
+    if link_elem and link_elem.get("href"):
+        url = link_elem["href"]
+        link_elem.decompose()
+
+    # Replace <br> with newlines for proper splitting
+    for br in footer_elem.find_all("br"):
+        br.replace_with("\n")
+
+    footer_text = footer_elem.get_text(strip=True)
+    lines = [line.strip() for line in footer_text.split("\n") if line.strip()]
+
+    team = None
+    if lines:
+        team_line = lines[0]
+        if team_line and "," in team_line:
+            team = [m.strip() for m in team_line.split(",") if m.strip()]
+        elif team_line:
+            team = [team_line]
+
+    return url, team
+
+
+def _build_dedup_key(
+    title: str, description: str, url: str, team: List[str]
+) -> str:
+    """Build deduplication key from project fields.
+
+    Args:
+        title: Project title
+        description: Project description
+        url: Project URL
+        team: Team members list
+
+    Returns:
+        Normalized deduplication key
+    """
+    team_key = (
+        ",".join([member.strip() for member in team if member]).lower()
+        if team
+        else ""
+    )
+    return "|".join(
+        [
+            _normalize_title(title),
+            _normalize_title(description),
+            url.strip().lower(),
+            team_key,
+        ]
+    )
 
 
 def fetch_projects_data(projects_url: str) -> List[Dict[str, Any]]:
@@ -44,8 +116,8 @@ def fetch_projects_data(projects_url: str) -> List[Dict[str, Any]]:
     projects = []
 
     # LauzHack 2025 wraps <details> inside <article> with a footer for team/link
-    details_elements = soup.find_all("details")
     article_elements = soup.find_all("article")
+    details_elements = soup.find_all("details")
     has_article_details = any(
         article.find("details") is not None for article in article_elements
     )
@@ -193,31 +265,11 @@ def extract_project_info(
 
         # Extract team and link from <footer>
         footer_elem = element.find("footer")
-        if footer_elem:
-            # Extract project link first
-            link_elem = footer_elem.find("a")
-            if link_elem and link_elem.get("href"):
-                project["url"] = link_elem["href"]
-                # Remove the link to get clean team text
-                link_elem.decompose()
-
-            # Get text content and split by <br> tags
-            # Replace <br> with newlines for proper splitting
-            for br in footer_elem.find_all("br"):
-                br.replace_with("\n")
-
-            footer_text = footer_elem.get_text(strip=True)
-            lines = [line.strip()
-                     for line in footer_text.split('\n') if line.strip()]
-
-            if lines:
-                # First line usually contains team members (comma-separated)
-                team_line = lines[0]
-                if team_line and ',' in team_line:
-                    project["team"] = [m.strip()
-                                       for m in team_line.split(',') if m.strip()]
-                elif team_line:
-                    project["team"] = [team_line]
+        url, team = _extract_footer_team_and_url(footer_elem)
+        if url:
+            project["url"] = url
+        if team:
+            project["team"] = team
 
     # For <article> elements (LauzHack 2023/2024 structure)
     elif element.name == "article":
@@ -290,27 +342,11 @@ def extract_project_info(
                 project["description"] = " ".join(description_parts)
 
         footer_elem = element.find("footer")
-        if footer_elem:
-            link_elem = footer_elem.find("a")
-            if link_elem and link_elem.get("href"):
-                project["url"] = link_elem["href"]
-                link_elem.decompose()
-
-            for br in footer_elem.find_all("br"):
-                br.replace_with("\n")
-
-            footer_text = footer_elem.get_text(strip=True)
-            lines = [line.strip()
-                     for line in footer_text.split("\n") if line.strip()]
-
-            if lines:
-                team_line = lines[0]
-                if team_line and "," in team_line:
-                    project["team"] = [
-                        m.strip() for m in team_line.split(",") if m.strip()
-                    ]
-                elif team_line:
-                    project["team"] = [team_line]
+        url, team = _extract_footer_team_and_url(footer_elem)
+        if url:
+            project["url"] = url
+        if team:
+            project["team"] = team
 
         # Extract link if not found in footer
         if "url" not in project:
@@ -320,16 +356,19 @@ def extract_project_info(
                 if href and not href.startswith("#") and not href.startswith("javascript"):
                     project["url"] = href
 
-        # Try to extract team info (often in small tags or specific divs)
-        team_elem = element.find(
-            class_="team") or element.find(class_="authors")
-        if team_elem:
-            team_text = team_elem.get_text(strip=True)
-            if ',' in team_text:
-                project["team"] = [m.strip()
-                                   for m in team_text.split(',') if m.strip()]
-            else:
-                project["team"] = [team_text] if team_text else []
+        # Try to extract team info from class attributes if not found in footer
+        if "team" not in project:
+            team_elem = element.find(class_="team") or element.find(
+                class_="authors"
+            )
+            if team_elem:
+                team_text = team_elem.get_text(strip=True)
+                if "," in team_text:
+                    project["team"] = [
+                        m.strip() for m in team_text.split(",") if m.strip()
+                    ]
+                elif team_text:
+                    project["team"] = [team_text]
 
     else:
         # Fallback: Try standard selectors for other HTML structures
@@ -358,8 +397,7 @@ def extract_project_info(
             href = link_elem["href"]
             # Make absolute URL if relative
             if href.startswith("/"):
-                base_url = "https://lauzhack.com"
-                project["url"] = base_url + href
+                project["url"] = BASE_URL + href
             else:
                 project["url"] = href
 
@@ -444,7 +482,7 @@ def fetch_metadata(metadata_url: str) -> Dict[str, Any]:
     if location_elem:
         metadata["location"] = location_elem.get_text(strip=True)
     else:
-        metadata["location"] = "EPFL, Lausanne, Switzerland"
+        metadata["location"] = DEFAULT_LOCATION
 
     # Extract sponsor information
     sponsor_elements = soup.find_all(class_="sponsor") or soup.find_all(
@@ -506,17 +544,9 @@ def process_project_data(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         description = project.get("description", "")
         url = project.get("url", "")
         team = project.get("team", []) or []
-        team_key = ",".join([member.strip() for member in team if member]).lower()
-        dedupe_key = "|".join(
-            [
-                _normalize_title(title),
-                _normalize_title(description),
-                url.strip().lower(),
-                team_key,
-            ]
-        )
+        dedupe_key = _build_dedup_key(title, description, url, team)
 
-        if any(dedupe_key):
+        if dedupe_key:
             if dedupe_key in seen_keys:
                 continue
             seen_keys.add(dedupe_key)
