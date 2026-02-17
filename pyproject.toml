@@ -12,6 +12,7 @@ dependencies = [
     "pandas>=3.0.0",
     "pydantic>=2.10.6",
     "pytest>=8.4.2",
+    "typer>=0.9.0",
 ]
 [dependency-groups]
 dev = [
@@ -20,6 +21,7 @@ dev = [
 
 [project.scripts]
 cli = 'open_pulse.cli:main'
+hackalysis = 'hackathon_analysis.cli:app'
 
 [build-system]
 requires = ["hatchling"]
@@ -31,6 +33,9 @@ exclude = [
     ".devenv",
     ".output",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/open_pulse", "src/hackathon_analysis"]
 
 [tool.ruff]
 extend-include = ["*.ipynb"]

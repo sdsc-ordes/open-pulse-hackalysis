@@ -49,6 +49,11 @@ test *args:
 run *args:
     uv run cli "$@"
 
+# Run the hackalysis CLI tool.
+[group('general')]
+hackalysis *args:
+    uv run hackalysis "$@"
+
 # Run the Jupyter notebook.
 [group('general')]
 notebook *args:
