@@ -2,8 +2,13 @@
 
 from pathlib import Path
 from typing import Optional
+
 import typer
+
 from hackathon_analysis.data_extraction.config import HACKATHON_CONFIGS
+from hackathon_analysis.data_extraction.lauzhack_extractor import (
+    extract_year_data,
+)
 
 
 def extract_lauzhack(output_folder: Path, years: Optional[str] = None):
@@ -44,9 +49,17 @@ def extract_lauzhack(output_folder: Path, years: Optional[str] = None):
         typer.echo(f"       - {output_projects}")
         typer.echo(f"       - {output_metadata}")
 
-        # TODO: Implement LauzHack extraction logic
-        # - Fetch projects data from {projects_url}
-        # - Fetch hackathon metadata from {metadata_url}
-        # - Save to output_projects and output_metadata
-
-        typer.echo(f"    ℹ {year} extraction not yet implemented")
+        # Extract data using helper functions
+        try:
+            stats = extract_year_data(
+                projects_url=projects_url,
+                metadata_url=metadata_url,
+                output_projects=output_projects,
+                output_metadata=output_metadata,
+                merge_data=True,
+            )
+            typer.echo(
+                f"    ✓ Completed: {stats['total_projects']} projects extracted"
+            )
+        except Exception as e:
+            typer.echo(f"    ✗ Error: {str(e)}", err=True)
