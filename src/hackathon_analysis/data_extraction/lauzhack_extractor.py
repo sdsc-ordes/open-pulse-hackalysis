@@ -11,6 +11,13 @@ import typer
 from bs4 import BeautifulSoup
 
 
+def _normalize_title(title: Optional[str]) -> str:
+    if not title:
+        return ""
+    normalized = re.sub(r"\s+", " ", title).strip().lower()
+    return normalized
+
+
 def fetch_projects_data(projects_url: str) -> List[Dict[str, Any]]:
     """
     Fetch projects data from LauzHack projects page.
@@ -36,22 +43,91 @@ def fetch_projects_data(projects_url: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(response.content, "html.parser")
     projects = []
 
-    # LauzHack uses <details> tags for projects
-    project_elements = soup.find_all("details")
+    # LauzHack 2025 wraps <details> inside <article> with a footer for team/link
+    details_elements = soup.find_all("details")
+    article_elements = soup.find_all("article")
+    has_article_details = any(
+        article.find("details") is not None for article in article_elements
+    )
+
+    if article_elements and has_article_details:
+        typer.echo(
+            f"      → Found {len(article_elements)} <article> elements with <details>"
+        )
+        for idx, element in enumerate(article_elements, 1):
+            try:
+                project = extract_project_info(element, idx)
+                if project:
+                    projects.append(project)
+            except Exception as e:
+                typer.echo(f"      ⚠ Error parsing project {idx}: {e}")
+                continue
+
+        return projects
+
+    if details_elements:
+        typer.echo(f"      → Found {len(details_elements)} <details> elements")
+        for idx, element in enumerate(details_elements, 1):
+            try:
+                project = extract_project_info(element, idx)
+                if project:
+                    projects.append(project)
+            except Exception as e:
+                typer.echo(f"      ⚠ Error parsing project {idx}: {e}")
+                continue
+
+        if article_elements:
+            typer.echo(
+                f"      → Found {len(article_elements)} <article> elements for awards"
+            )
+            awards_projects = []
+            for idx, element in enumerate(article_elements, 1):
+                try:
+                    project = extract_project_info(element, idx)
+                    if project:
+                        awards_projects.append(project)
+                except Exception as e:
+                    typer.echo(
+                        f"      ⚠ Error parsing awards project {idx}: {e}")
+                    continue
+
+            awards_by_title = {
+                _normalize_title(p.get("title")): p
+                for p in awards_projects
+                if p.get("title")
+            }
+
+            for project in projects:
+                key = _normalize_title(project.get("title"))
+                if not key:
+                    continue
+                awards_project = awards_by_title.get(key)
+                if not awards_project:
+                    continue
+                if awards_project.get("awards") and not project.get("awards"):
+                    project["awards"] = awards_project["awards"]
+                    project["categories"] = awards_project.get(
+                        "categories", awards_project["awards"]
+                    )
+                if awards_project.get("url") and not project.get("url"):
+                    project["url"] = awards_project["url"]
+                if awards_project.get("team") and not project.get("team"):
+                    project["team"] = awards_project["team"]
+
+        return projects
+
+    # Fallback to other common selectors
+    project_elements = soup.find_all("div", class_="project") or soup.find_all(
+        "div", class_="project-card"
+    )
 
     if not project_elements:
-        # Fallback to other common selectors
-        project_elements = soup.find_all("div", class_="project") or soup.find_all(
-            "div", class_="project-card"
+        # Try alternative selectors
+        project_elements = (
+            article_elements
+            or soup.find_all("div", class_="card")
+            or soup.find_all("section", class_="project")
         )
-
-        if not project_elements:
-            # Try alternative selectors
-            project_elements = (
-                soup.find_all("article")
-                or soup.find_all("div", class_="card")
-                or soup.find_all("section", class_="project")
-            )
 
     typer.echo(f"      → Found {len(project_elements)} project elements")
 
@@ -160,6 +236,31 @@ def extract_project_info(
                 # Same as awards for consistency
                 project["categories"] = awards
 
+        details_elem = element.find("details")
+        if details_elem:
+            summary_elem = details_elem.find("summary")
+            summary_text = None
+            if summary_elem:
+                summary_text = summary_elem.get_text(strip=True)
+
+            description_parts = []
+            for child in details_elem.children:
+                if getattr(child, "name", None) == "summary":
+                    continue
+                if isinstance(child, str):
+                    text = child.strip()
+                    if text:
+                        description_parts.append(text)
+                elif hasattr(child, "get_text"):
+                    text = child.get_text(strip=True)
+                    if text:
+                        description_parts.append(text)
+
+            if description_parts:
+                project["description"] = " ".join(description_parts)
+            elif summary_text and "description" not in project:
+                project["description"] = summary_text
+
         # If no header, try other heading tags
         if "title" not in project:
             title_elem = element.find("h2") or element.find(
@@ -188,12 +289,36 @@ def extract_project_info(
                                      for p in desc_paragraphs]
                 project["description"] = " ".join(description_parts)
 
-        # Extract link
-        link_elem = element.find("a")
-        if link_elem and link_elem.get("href"):
-            href = link_elem["href"]
-            if href and not href.startswith("#") and not href.startswith("javascript"):
-                project["url"] = href
+        footer_elem = element.find("footer")
+        if footer_elem:
+            link_elem = footer_elem.find("a")
+            if link_elem and link_elem.get("href"):
+                project["url"] = link_elem["href"]
+                link_elem.decompose()
+
+            for br in footer_elem.find_all("br"):
+                br.replace_with("\n")
+
+            footer_text = footer_elem.get_text(strip=True)
+            lines = [line.strip()
+                     for line in footer_text.split("\n") if line.strip()]
+
+            if lines:
+                team_line = lines[0]
+                if team_line and "," in team_line:
+                    project["team"] = [
+                        m.strip() for m in team_line.split(",") if m.strip()
+                    ]
+                elif team_line:
+                    project["team"] = [team_line]
+
+        # Extract link if not found in footer
+        if "url" not in project:
+            link_elem = element.find("a")
+            if link_elem and link_elem.get("href"):
+                href = link_elem["href"]
+                if href and not href.startswith("#") and not href.startswith("javascript"):
+                    project["url"] = href
 
         # Try to extract team info (often in small tags or specific divs)
         team_elem = element.find(
