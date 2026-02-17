@@ -23,7 +23,17 @@ Describe the installation instruction here.
 
 ## Usage
 
-Describe the installation instruction here.
+### Extract Hackathon Data
+
+Extract data from LauzHack:
+```bash
+just hackalysis --output_folder ./data --hackathon_provider lauzhack
+```
+
+Extract data from Devpost:
+```bash
+just hackalysis --output_folder ./data --hackathon_provider devpost
+```
 
 ## Development
 
