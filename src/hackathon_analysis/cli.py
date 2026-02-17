@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
 import typer
 
@@ -27,6 +27,22 @@ def extract(
             help="Hackathon provider (lauzhack or devpost)",
         ),
     ],
+    years: Annotated[
+        Optional[str],
+        typer.Option(
+            "--years",
+            "-y",
+            help="Comma-separated years to extract (e.g., '2025,2024,2023'). If not specified, extracts all available years.",
+        ),
+    ] = None,
+    hackathon_name: Annotated[
+        Optional[str],
+        typer.Option(
+            "--hackathon_name",
+            "-n",
+            help="Hackathon name for Devpost (e.g., 'treehacks-2026', 'hack-with-mlh-and-do-nyc'). Required for devpost provider.",
+        ),
+    ] = None,
 ):
     """Extract hackathon data from specified provider."""
     # Create output folder if it doesn't exist
@@ -37,9 +53,15 @@ def extract(
     )
 
     if hackathon_provider.lower() == "lauzhack":
-        extract_lauzhack(output_folder)
+        extract_lauzhack(output_folder, years)
     elif hackathon_provider.lower() == "devpost":
-        extract_devpost(output_folder)
+        if not hackathon_name:
+            typer.echo(
+                "Error: --hackathon_name is required for devpost provider",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        extract_devpost(output_folder, hackathon_name, years)
     else:
         typer.echo(
             f"Error: Unknown provider '{hackathon_provider}'. "
