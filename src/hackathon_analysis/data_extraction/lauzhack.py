@@ -1,24 +1,52 @@
 """LauzHack data extraction module."""
 
 from pathlib import Path
+from typing import Optional
 import typer
+from hackathon_analysis.data_extraction.config import HACKATHON_CONFIGS
 
 
-def extract_lauzhack(output_folder: Path):
+def extract_lauzhack(output_folder: Path, years: Optional[str] = None):
     """
     Extract hackathon data from LauzHack.
 
     Args:
         output_folder: Path to save extracted data
+        years: Comma-separated years (e.g., "2025,2024,2023"). If None, uses all available years.
     """
-    typer.echo("Extracting data from LauzHack...")
-    
-    # TODO: Implement LauzHack extraction logic
-    # Example: Fetch data from LauzHack API or scrape website
-    # Save to output_folder / "lauzhack_data.json" or similar
-    
-    output_file = output_folder / "lauzhack_data.json"
-    typer.echo(f"  → Data will be saved to: {output_file}")
-    
-    # Placeholder for actual implementation
-    typer.echo("  ℹ LauzHack extraction not yet implemented")
+    config = HACKATHON_CONFIGS["lauzhack"]
+    typer.echo(f"Extracting data from {config.name}...")
+
+    # Determine which years to extract
+    if years:
+        years_to_extract = [int(y.strip()) for y in years.split(",")]
+    else:
+        years_to_extract = config.years
+
+    typer.echo(f"  → Years to extract: {years_to_extract}")
+
+    for year in years_to_extract:
+        typer.echo(f"\n  Processing {year}:")
+        projects_url = config.projects_url_template.format(year=year)
+        metadata_url = config.metadata_url_template.format(year=year)
+
+        typer.echo(f"    → Projects URL: {projects_url}")
+        typer.echo(f"    → Metadata URL: {metadata_url}")
+
+        # Create output folder with hackathon name and year
+        hackathon_year_folder = output_folder / f"{config.name.lower()}-{year}"
+        hackathon_year_folder.mkdir(parents=True, exist_ok=True)
+
+        output_projects = hackathon_year_folder / "lauzhack_projects.json"
+        output_metadata = hackathon_year_folder / "lauzhack_metadata.json"
+
+        typer.echo(f"    → Data will be saved to:")
+        typer.echo(f"       - {output_projects}")
+        typer.echo(f"       - {output_metadata}")
+
+        # TODO: Implement LauzHack extraction logic
+        # - Fetch projects data from {projects_url}
+        # - Fetch hackathon metadata from {metadata_url}
+        # - Save to output_projects and output_metadata
+
+        typer.echo(f"    ℹ {year} extraction not yet implemented")
