@@ -19,6 +19,7 @@
 
 # General output folder.
 .output
+data/*
 # Virtual environment.
 .venv
 # Environment variables
