@@ -586,7 +586,7 @@ def process_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Processed metadata
     """
-    typer.echo(f"      → Processing metadata")
+    typer.echo("      → Processing metadata")
 
     # Add timestamp
     metadata["extracted_at"] = datetime.now().isoformat()
@@ -684,14 +684,14 @@ def extract_year_data(
     Args:
         projects_url: URL to projects page
         metadata_url: URL to metadata page
-        output_projects: Path to save projects JSON
+        output_projects: Path to save projects parquet file
         output_metadata: Path to save metadata JSON
         merge_data: Whether to merge metadata into projects
 
     Returns:
         Dictionary with extraction statistics
     """
-    typer.echo(f"      → Starting extraction")
+    typer.echo("      → Starting extraction")
 
     # Step 1: Fetch raw data
     projects = fetch_projects_data(projects_url)

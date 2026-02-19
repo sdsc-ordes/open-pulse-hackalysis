@@ -7,7 +7,7 @@ This test demonstrates how to test a simple helper function that normalizes proj
 import pytest
 
 # Import the function we want to test
-from hackathon_analysis.data_extraction.lauzhack_extractor import _normalize_title
+from hackathon_analysis.data_extraction.lauzhack_extractor import _normalize_title, 
 
 
 def test_normalize_title_removes_extra_spaces():

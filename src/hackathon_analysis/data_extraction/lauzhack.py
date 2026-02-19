@@ -46,7 +46,7 @@ def extract_lauzhack(output_folder: Path, years: Optional[str] = None):
         output_projects = hackathon_year_folder / "lauzhack_projects.parquet"
         output_metadata = hackathon_year_folder / "lauzhack_metadata.json"
 
-        typer.echo(f"    → Data will be saved to:")
+        typer.echo("    → Data will be saved to:")
         typer.echo(f"       - {output_projects}")
         typer.echo(f"       - {output_metadata}")
 

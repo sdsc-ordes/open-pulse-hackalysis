@@ -54,7 +54,7 @@ def extract_devpost(
         output_projects = output_dir / "devpost_projects.json"
         output_metadata = output_dir / "devpost_metadata.json"
 
-        typer.echo(f"    → Data will be saved to:")
+        typer.echo("    → Data will be saved to:")
         typer.echo(f"       - {output_projects}")
         typer.echo(f"       - {output_metadata}")
 
@@ -67,7 +67,8 @@ def extract_devpost(
         # - now write the merged data to output_projects and the hackathon metadata to output_metadata, make sure that it has github url of the project, if it's not there then put N/A there and other links should be in labelled columns too
 
         status_msg = f"{year} extraction" if year else "Extraction"
-        typer.echo(f"    ℹ {status_msg} not yet implemented")
+        typer.echo(f"    ℹ {status_msg} not yet implemented; exiting with error status.")
+        raise typer.Exit(code=1)
 
     # Upload entire output folder to Hugging Face
     # This maintains the folder structure ({hackathon-name}/, etc.)

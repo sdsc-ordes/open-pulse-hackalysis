@@ -44,7 +44,12 @@ uv run hackalysis -o ./data -p lauzhack
 Extract data from Devpost:
 
 ```bash
-just hackalysis --output_folder ./data --hackathon_provider devpost
+just hackalysis --output_folder ./data --hackathon_provider devpost --hackathon_name "ExampleHackathonName"
+```
+or
+
+```bash
+just hackalysis -o ./data -p devpost -n "ExampleHackathonName"
 ```
 
 ## Development

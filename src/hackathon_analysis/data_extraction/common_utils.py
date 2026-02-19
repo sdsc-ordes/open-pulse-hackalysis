@@ -38,7 +38,7 @@ def upload_to_hugging_face(
 
     try:
         if verbose:
-            typer.echo(f"\n  Uploading data to Hugging Face...")
+            typer.echo("\n  Uploading data to Hugging Face...")
         upload_folder(
             folder_path=str(output_folder),
             repo_id=repo_id,

@@ -47,7 +47,7 @@ test *args:
 # Run an executable.
 [group('general')]
 run *args:
-    uv run cli "$@"
+    uv run hackalysis "$@"
 
 # Run the hackalysis CLI tool.
 [group('general')]
