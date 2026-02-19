@@ -5,6 +5,7 @@ from typing import Optional
 
 import typer
 
+from hackathon_analysis.data_extraction.common_utils import upload_to_hugging_face
 from hackathon_analysis.data_extraction.config import HACKATHON_CONFIGS
 
 
@@ -67,3 +68,9 @@ def extract_devpost(
 
         status_msg = f"{year} extraction" if year else "Extraction"
         typer.echo(f"    ℹ {status_msg} not yet implemented")
+
+    # Upload entire output folder to Hugging Face
+    # This maintains the folder structure ({hackathon-name}/, etc.)
+    # and works with both LauzHack and Devpost data
+    # Uncomment when Devpost extraction is implemented:
+    # upload_to_hugging_face(output_folder)

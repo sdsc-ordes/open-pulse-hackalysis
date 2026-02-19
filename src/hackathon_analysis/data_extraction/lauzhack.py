@@ -65,5 +65,7 @@ def extract_lauzhack(output_folder: Path, years: Optional[str] = None):
         except Exception as e:
             typer.echo(f"    ✗ Error: {str(e)}", err=True)
 
-    # Upload to Hugging Face
+    # Upload entire output folder to Hugging Face
+    # This maintains the folder structure (lauzhack-2023/, lauzhack-2024/, etc.)
+    # and works with both LauzHack and Devpost data
     upload_to_hugging_face(output_folder)
