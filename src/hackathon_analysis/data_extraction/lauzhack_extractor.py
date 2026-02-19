@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 # Constants
 DEFAULT_LOCATION = "EPFL, Lausanne, Switzerland"
 BASE_URL = "https://lauzhack.com"
+MIN_CONTENT_DIV_LENGTH = 20  # Minimum characters for content div to be considered
 
 
 def _normalize_title(title: Optional[str]) -> str:
@@ -91,6 +92,63 @@ def _build_dedup_key(
     )
 
 
+def _parse_projects_from_elements(
+    elements: List[Any], element_type: str
+) -> List[Dict[str, Any]]:
+    """Parse projects from a list of elements.
+
+    Args:
+        elements: List of BeautifulSoup elements
+        element_type: Type of elements for logging
+
+    Returns:
+        List of parsed projects
+    """
+    projects = []
+    for idx, element in enumerate(elements, 1):
+        try:
+            project = extract_project_info(element, idx)
+            if project:
+                projects.append(project)
+        except Exception as e:
+            typer.echo(f"      ⚠ Error parsing {element_type} {idx}: {e}")
+            continue
+    return projects
+
+
+def _merge_awards_into_projects(
+    projects: List[Dict[str, Any]], awards_projects: List[Dict[str, Any]]
+) -> None:
+    """Merge award information from articles into projects.
+
+    Args:
+        projects: Main projects list (modified in place)
+        awards_projects: Projects with award information
+    """
+    awards_by_title = {
+        _normalize_title(p.get("title")): p
+        for p in awards_projects
+        if p.get("title")
+    }
+
+    for project in projects:
+        key = _normalize_title(project.get("title"))
+        if not key:
+            continue
+        awards_project = awards_by_title.get(key)
+        if not awards_project:
+            continue
+        if awards_project.get("awards") and not project.get("awards"):
+            project["awards"] = awards_project["awards"]
+            project["categories"] = awards_project.get(
+                "categories", awards_project["awards"]
+            )
+        if awards_project.get("url") and not project.get("url"):
+            project["url"] = awards_project["url"]
+        if awards_project.get("team") and not project.get("team"):
+            project["team"] = awards_project["team"]
+
+
 def fetch_projects_data(projects_url: str) -> List[Dict[str, Any]]:
     """
     Fetch projects data from LauzHack projects page.
@@ -127,65 +185,20 @@ def fetch_projects_data(projects_url: str) -> List[Dict[str, Any]]:
         typer.echo(
             f"      → Found {len(article_elements)} <article> elements with <details>"
         )
-        for idx, element in enumerate(article_elements, 1):
-            try:
-                project = extract_project_info(element, idx)
-                if project:
-                    projects.append(project)
-            except Exception as e:
-                typer.echo(f"      ⚠ Error parsing project {idx}: {e}")
-                continue
-
-        return projects
+        return _parse_projects_from_elements(article_elements, "article")
 
     if details_elements:
         typer.echo(f"      → Found {len(details_elements)} <details> elements")
-        for idx, element in enumerate(details_elements, 1):
-            try:
-                project = extract_project_info(element, idx)
-                if project:
-                    projects.append(project)
-            except Exception as e:
-                typer.echo(f"      ⚠ Error parsing project {idx}: {e}")
-                continue
+        projects = _parse_projects_from_elements(details_elements, "details")
 
         if article_elements:
             typer.echo(
                 f"      → Found {len(article_elements)} <article> elements for awards"
             )
-            awards_projects = []
-            for idx, element in enumerate(article_elements, 1):
-                try:
-                    project = extract_project_info(element, idx)
-                    if project:
-                        awards_projects.append(project)
-                except Exception as e:
-                    typer.echo(
-                        f"      ⚠ Error parsing awards project {idx}: {e}")
-                    continue
-
-            awards_by_title = {
-                _normalize_title(p.get("title")): p
-                for p in awards_projects
-                if p.get("title")
-            }
-
-            for project in projects:
-                key = _normalize_title(project.get("title"))
-                if not key:
-                    continue
-                awards_project = awards_by_title.get(key)
-                if not awards_project:
-                    continue
-                if awards_project.get("awards") and not project.get("awards"):
-                    project["awards"] = awards_project["awards"]
-                    project["categories"] = awards_project.get(
-                        "categories", awards_project["awards"]
-                    )
-                if awards_project.get("url") and not project.get("url"):
-                    project["url"] = awards_project["url"]
-                if awards_project.get("team") and not project.get("team"):
-                    project["team"] = awards_project["team"]
+            awards_projects = _parse_projects_from_elements(
+                article_elements, "awards article"
+            )
+            _merge_awards_into_projects(projects, awards_projects)
 
         return projects
 
@@ -203,17 +216,240 @@ def fetch_projects_data(projects_url: str) -> List[Dict[str, Any]]:
         )
 
     typer.echo(f"      → Found {len(project_elements)} project elements")
+    return _parse_projects_from_elements(project_elements, "project")
 
-    for idx, element in enumerate(project_elements, 1):
-        try:
-            project = extract_project_info(element, idx)
-            if project:
-                projects.append(project)
-        except Exception as e:
-            typer.echo(f"      ⚠ Error parsing project {idx}: {e}")
+
+def _extract_details_project(
+    element: BeautifulSoup, project: Dict[str, Any]
+) -> None:
+    """Extract project info from <details> element.
+
+    Args:
+        element: BeautifulSoup details element
+        project: Project dict to populate (modified in place)
+    """
+    # Extract title from <summary>
+    summary_elem = element.find("summary")
+    if summary_elem:
+        project["title"] = summary_elem.get_text(strip=True)
+
+    # Check for awards/prizes in mark tags
+    mark_elems = element.find_all("mark")
+    if mark_elems:
+        awards = [mark.get_text(strip=True) for mark in mark_elems]
+        project["awards"] = awards
+        project["categories"] = awards  # Same as awards for consistency
+
+    # Extract description (text after summary)
+    description_parts = []
+    for child in element.children:
+        if child.name == "summary":
             continue
+        if child.name == "footer":
+            break
+        if isinstance(child, str):
+            text = child.strip()
+            if text:
+                description_parts.append(text)
+        elif hasattr(child, 'get_text'):
+            text = child.get_text(strip=True)
+            if text:
+                description_parts.append(text)
 
-    return projects
+    if description_parts:
+        project["description"] = " ".join(description_parts)
+
+    # Extract team and link from <footer>
+    footer_elem = element.find("footer")
+    url, team = _extract_footer_team_and_url(footer_elem)
+    if url:
+        project["url"] = url
+    if team:
+        project["team"] = team
+
+
+def _extract_description_from_article_details(
+    element: BeautifulSoup,
+) -> Optional[str]:
+    """Extract description from article's details element.
+
+    Args:
+        element: BeautifulSoup article element
+
+    Returns:
+        Description text or None
+    """
+    details_elem = element.find("details")
+    if not details_elem:
+        return None
+
+    summary_elem = details_elem.find("summary")
+    summary_text = None
+    if summary_elem:
+        summary_text = summary_elem.get_text(strip=True)
+
+    description_parts = []
+    for child in details_elem.children:
+        if getattr(child, "name", None) == "summary":
+            continue
+        if isinstance(child, str):
+            text = child.strip()
+            if text:
+                description_parts.append(text)
+        elif hasattr(child, "get_text"):
+            text = child.get_text(strip=True)
+            if text:
+                description_parts.append(text)
+
+    if description_parts:
+        return " ".join(description_parts)
+    return summary_text if summary_text else None
+
+
+def _extract_title_with_awards(
+    element: BeautifulSoup, project: Dict[str, Any]
+) -> None:
+    """Extract title and awards from article element.
+
+    Args:
+        element: BeautifulSoup article element
+        project: Project dict to populate (modified in place)
+    """
+    header_elem = element.find("header")
+    if header_elem:
+        title_elem = header_elem.find("b")
+        if title_elem:
+            project["title"] = title_elem.get_text(strip=True)
+
+        # Check for awards/prizes in mark tags
+        mark_elems = header_elem.find_all("mark")
+        if mark_elems:
+            awards = [mark.get_text(strip=True) for mark in mark_elems]
+            project["awards"] = awards
+            project["categories"] = awards
+
+    # If no header, try other heading tags
+    if "title" not in project:
+        title_elem = element.find("h2") or element.find(
+            "h3") or element.find("h4")
+        if title_elem:
+            project["title"] = title_elem.get_text(strip=True)
+
+
+def _extract_descriptions(
+    element: BeautifulSoup, project: Dict[str, Any]
+) -> None:
+    """Extract description from multiple sources with fallbacks.
+
+    Args:
+        element: BeautifulSoup article element
+        project: Project dict to populate (modified in place)
+    """
+    # Try details element description first
+    extract_desc = _extract_description_from_article_details(element)
+    if extract_desc:
+        project["description"] = extract_desc
+        return
+
+    # Try content divs
+    content_divs = []
+    for div in element.find_all("div"):
+        text = div.get_text(strip=True)
+        if text and len(text) > MIN_CONTENT_DIV_LENGTH:
+            content_divs.append(text)
+
+    if content_divs:
+        project["description"] = " ".join(content_divs[:2])
+        return
+
+    # Try paragraphs as last resort
+    desc_paragraphs = element.find_all("p")
+    if desc_paragraphs:
+        description_parts = [p.get_text(strip=True)
+                             for p in desc_paragraphs]
+        project["description"] = " ".join(description_parts)
+
+
+def _extract_url_and_team(
+    element: BeautifulSoup, project: Dict[str, Any]
+) -> None:
+    """Extract URL and team information from article element.
+
+    Args:
+        element: BeautifulSoup article element
+        project: Project dict to populate (modified in place)
+    """
+    footer_elem = element.find("footer")
+    url, team = _extract_footer_team_and_url(footer_elem)
+    if url:
+        project["url"] = url
+    if team:
+        project["team"] = team
+
+    # Extract link if not found in footer
+    if "url" not in project:
+        link_elem = element.find("a")
+        if link_elem and link_elem.get("href"):
+            href = link_elem["href"]
+            if href and not href.startswith("#") and not href.startswith("javascript"):
+                project["url"] = href
+
+    # Try to extract team info from class attributes
+    if "team" not in project:
+        team_elem = element.find(class_="team") or element.find(
+            class_="authors"
+        )
+        if team_elem:
+            team_text = team_elem.get_text(strip=True)
+            if "," in team_text:
+                project["team"] = [
+                    m.strip() for m in team_text.split(",") if m.strip()
+                ]
+            elif team_text:
+                project["team"] = [team_text]
+
+
+def _extract_article_project(
+    element: BeautifulSoup, project: Dict[str, Any]
+) -> None:
+    """Extract project info from <article> element.
+
+    Args:
+        element: BeautifulSoup article element
+        project: Project dict to populate (modified in place)
+    """
+    _extract_title_with_awards(element, project)
+    _extract_descriptions(element, project)
+    _extract_url_and_team(element, project)
+
+
+def _extract_fallback_project(
+    element: BeautifulSoup, project: Dict[str, Any]
+) -> None:
+    """Extract project info using fallback selectors.
+
+    Args:
+        element: BeautifulSoup element
+        project: Project dict to populate (modified in place)
+    """
+    title_elem = (
+        element.find("h1")
+        or element.find("h2")
+        or element.find("h3")
+        or element.find(class_="title")
+        or element.find(class_="project-title")
+    )
+    if title_elem:
+        project["title"] = title_elem.get_text(strip=True)
+
+    # Extract description
+    desc_elem = (
+        element.find("p")
+        or element.find(class_="description")
+        or element.find(class_="project-description")
+    )
+    if desc_elem:
+        project["description"] = desc_elem.get_text(strip=True)
 
 
 def extract_project_info(
@@ -233,176 +469,26 @@ def extract_project_info(
 
     # For <details> elements (LauzHack 2025 structure)
     if element.name == "details":
-        # Extract title from <summary>
-        summary_elem = element.find("summary")
-        if summary_elem:
-            project["title"] = summary_elem.get_text(strip=True)
-
-        # Check for awards/prizes in mark tags
-        mark_elems = element.find_all("mark")
-        if mark_elems:
-            awards = [mark.get_text(strip=True) for mark in mark_elems]
-            project["awards"] = awards
-            project["categories"] = awards  # Same as awards for consistency
-
-        # Extract description (text after summary)
-        description_parts = []
-        for child in element.children:
-            if child.name == "summary":
-                continue
-            if child.name == "footer":
-                break
-            if isinstance(child, str):
-                text = child.strip()
-                if text:
-                    description_parts.append(text)
-            elif hasattr(child, 'get_text'):
-                text = child.get_text(strip=True)
-                if text:
-                    description_parts.append(text)
-
-        if description_parts:
-            project["description"] = " ".join(description_parts)
-
-        # Extract team and link from <footer>
-        footer_elem = element.find("footer")
-        url, team = _extract_footer_team_and_url(footer_elem)
-        if url:
-            project["url"] = url
-        if team:
-            project["team"] = team
+        _extract_details_project(element, project)
 
     # For <article> elements (LauzHack 2023/2024 structure)
     elif element.name == "article":
-        # Articles typically have header > b for title
-        header_elem = element.find("header")
-        if header_elem:
-            title_elem = header_elem.find("b")
-            if title_elem:
-                project["title"] = title_elem.get_text(strip=True)
+        _extract_article_project(element, project)
 
-            # Check for awards/prizes in mark tags (extract ALL mark tags)
-            mark_elems = header_elem.find_all("mark")
-            if mark_elems:
-                awards = [mark.get_text(strip=True) for mark in mark_elems]
-                project["awards"] = awards
-                # Same as awards for consistency
-                project["categories"] = awards
+    else:
+        # Fallback: Try standard selectors for other HTML structures
+        _extract_fallback_project(element, project)
 
-        details_elem = element.find("details")
-        if details_elem:
-            summary_elem = details_elem.find("summary")
-            summary_text = None
-            if summary_elem:
-                summary_text = summary_elem.get_text(strip=True)
-
-            description_parts = []
-            for child in details_elem.children:
-                if getattr(child, "name", None) == "summary":
-                    continue
-                if isinstance(child, str):
-                    text = child.strip()
-                    if text:
-                        description_parts.append(text)
-                elif hasattr(child, "get_text"):
-                    text = child.get_text(strip=True)
-                    if text:
-                        description_parts.append(text)
-
-            if description_parts:
-                project["description"] = " ".join(description_parts)
-            elif summary_text and "description" not in project:
-                project["description"] = summary_text
-
-        # If no header, try other heading tags
-        if "title" not in project:
-            title_elem = element.find("h2") or element.find(
-                "h3") or element.find("h4")
-            if title_elem:
-                project["title"] = title_elem.get_text(strip=True)
-
-        # Extract description from main content divs or paragraphs
-        # Look in divs that are not headers
-        content_divs = []
-        for div in element.find_all("div"):
-            text = div.get_text(strip=True)
-            # Skip very short divs or those that look like metadata
-            short_text_size = 20
-            if text and len(text) > short_text_size:
-                content_divs.append(text)
-
-        if content_divs:
-            project["description"] = " ".join(
-                content_divs[:2])  # First 2 content divs
-
-        # Also check paragraphs
-        min_desc_length = 35
-        if "description" not in project or len(project["description"]) < min_desc_length:
-            desc_paragraphs = element.find_all("p")
-            if desc_paragraphs:
-                description_parts = [p.get_text(strip=True)
-                                     for p in desc_paragraphs]
-                project["description"] = " ".join(description_parts)
-
-        footer_elem = element.find("footer")
-        url, team = _extract_footer_team_and_url(footer_elem)
-        if url:
-            project["url"] = url
-        if team:
-            project["team"] = team
-
-        # Extract link if not found in footer
+        # Extract link if not already found
         if "url" not in project:
             link_elem = element.find("a")
             if link_elem and link_elem.get("href"):
                 href = link_elem["href"]
-                if href and not href.startswith("#") and not href.startswith("javascript"):
+                # Make absolute URL if relative
+                if href.startswith("/"):
+                    project["url"] = BASE_URL + href
+                else:
                     project["url"] = href
-
-        # Try to extract team info from class attributes if not found in footer
-        if "team" not in project:
-            team_elem = element.find(class_="team") or element.find(
-                class_="authors"
-            )
-            if team_elem:
-                team_text = team_elem.get_text(strip=True)
-                if "," in team_text:
-                    project["team"] = [
-                        m.strip() for m in team_text.split(",") if m.strip()
-                    ]
-                elif team_text:
-                    project["team"] = [team_text]
-
-    else:
-        # Fallback: Try standard selectors for other HTML structures
-        title_elem = (
-            element.find("h1")
-            or element.find("h2")
-            or element.find("h3")
-            or element.find(class_="title")
-            or element.find(class_="project-title")
-        )
-        if title_elem:
-            project["title"] = title_elem.get_text(strip=True)
-
-        # Extract description
-        desc_elem = (
-            element.find("p")
-            or element.find(class_="description")
-            or element.find(class_="project-description")
-        )
-        if desc_elem:
-            project["description"] = desc_elem.get_text(strip=True)
-
-        # Extract link
-        link_elem = element.find("a")
-        if link_elem and link_elem.get("href"):
-            href = link_elem["href"]
-            # Make absolute URL if relative
-            if href.startswith("/"):
-                project["url"] = BASE_URL + href
-            else:
-                project["url"] = href
 
         # Extract team members (if available)
         team_elems = element.find_all(class_="team-member") or element.find_all(
@@ -426,6 +512,37 @@ def extract_project_info(
             project["image_url"] = img_elem["src"]
 
     return project if "title" in project else None
+
+
+def _extract_social_links(soup: BeautifulSoup) -> Dict[str, str]:
+    """Extract social media links from page.
+
+    Args:
+        soup: BeautifulSoup parsed page
+
+    Returns:
+        Dictionary with social media platform as key and URL as value
+    """
+    social_patterns = {
+        "twitter": ["twitter.com", "x.com"],
+        "facebook": ["facebook.com"],
+        "instagram": ["instagram.com"],
+        "linkedin": ["linkedin.com"],
+        "github": ["github.com"],
+    }
+
+    social_links = {}
+    for link in soup.find_all("a"):
+        href = link.get("href", "")
+        for platform, patterns in social_patterns.items():
+            for pattern in patterns:
+                if pattern in href:
+                    if platform == "github" and "lauzhack" not in href.lower():
+                        continue
+                    social_links[platform] = href
+                    break
+
+    return social_links
 
 
 def fetch_metadata(metadata_url: str) -> Dict[str, Any]:
@@ -506,20 +623,7 @@ def fetch_metadata(metadata_url: str) -> Dict[str, Any]:
         ]
 
     # Extract social media links
-    social_links = {}
-    for link in soup.find_all("a"):
-        href = link.get("href", "")
-        if "twitter.com" in href or "x.com" in href:
-            social_links["twitter"] = href
-        elif "facebook.com" in href:
-            social_links["facebook"] = href
-        elif "instagram.com" in href:
-            social_links["instagram"] = href
-        elif "linkedin.com" in href:
-            social_links["linkedin"] = href
-        elif "github.com" in href and "lauzhack" in href.lower():
-            social_links["github"] = href
-
+    social_links = _extract_social_links(soup)
     if social_links:
         metadata["social_links"] = social_links
 

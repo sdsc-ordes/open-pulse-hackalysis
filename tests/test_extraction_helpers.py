@@ -4,8 +4,6 @@ Basic test for LauzHack data extraction.
 This test demonstrates how to test a simple helper function that normalizes project titles.
 """
 
-import pytest
-
 # Import the function we want to test
 from hackathon_analysis.data_extraction.lauzhack_extractor import _normalize_title
 
@@ -34,6 +32,6 @@ def test_normalize_title_removes_extra_spaces():
 
 
 if __name__ == "__main__":
-    #Run this test directly with: python tests/test_extraction_basic.py
+    # Run this test directly with: python tests/test_extraction_basic.py
     test_normalize_title_removes_extra_spaces()
     print("✓ Test passed!")
