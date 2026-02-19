@@ -39,7 +39,7 @@ uv run hackalysis -o ./data -p lauzhack -y 2023,2024,2025
 Extract data without specifying the years will default to extracting all available years for the specified provider.
 ```bash
 uv run hackalysis -o ./data -p lauzhack
-````
+```
 
 Extract data from Devpost:
 

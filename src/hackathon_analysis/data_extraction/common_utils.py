@@ -4,11 +4,7 @@ import os
 from pathlib import Path
 
 import typer
-from dotenv import load_dotenv
 from huggingface_hub import upload_folder
-
-# Load environment variables from .env file
-load_dotenv()
 
 
 def upload_to_hugging_face(

@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
+from dotenv import load_dotenv
 
 from hackathon_analysis.data_extraction.lauzhack import extract_lauzhack
 from hackathon_analysis.data_extraction.devpost import extract_devpost
@@ -74,4 +75,5 @@ def extract(
 
 
 if __name__ == "__main__":
+    load_dotenv()
     app()
