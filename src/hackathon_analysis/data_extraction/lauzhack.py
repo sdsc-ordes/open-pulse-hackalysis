@@ -5,6 +5,7 @@ from typing import Optional
 
 import typer
 
+from hackathon_analysis.data_extraction.common_utils import upload_to_hugging_face
 from hackathon_analysis.data_extraction.config import HACKATHON_CONFIGS
 from hackathon_analysis.data_extraction.lauzhack_extractor import (
     extract_year_data,
@@ -63,3 +64,6 @@ def extract_lauzhack(output_folder: Path, years: Optional[str] = None):
             )
         except Exception as e:
             typer.echo(f"    ✗ Error: {str(e)}", err=True)
+
+    # Upload to Hugging Face
+    upload_to_hugging_face(output_folder)
