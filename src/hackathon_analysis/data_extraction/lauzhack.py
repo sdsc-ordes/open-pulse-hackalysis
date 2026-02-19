@@ -43,7 +43,7 @@ def extract_lauzhack(output_folder: Path, years: Optional[str] = None):
         hackathon_year_folder = output_folder / f"{config.name.lower()}-{year}"
         hackathon_year_folder.mkdir(parents=True, exist_ok=True)
 
-        output_projects = hackathon_year_folder / "lauzhack_projects.json"
+        output_projects = hackathon_year_folder / "lauzhack_projects.parquet"
         output_metadata = hackathon_year_folder / "lauzhack_metadata.json"
 
         typer.echo(f"    → Data will be saved to:")

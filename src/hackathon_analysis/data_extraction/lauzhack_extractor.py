@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
 import requests
 import typer
 from bs4 import BeautifulSoup
@@ -636,19 +637,20 @@ def save_projects_data(
     projects: List[Dict[str, Any]], output_file: Path
 ) -> None:
     """
-    Save projects data to JSON file.
+    Save projects data to parquet file as pandas DataFrame.
 
     Args:
         projects: Projects data to save
-        output_file: Path to output JSON file
+        output_file: Path to output parquet file
     """
     typer.echo(
         f"      → Saving {len(projects)} projects to {output_file.name}")
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        json.dump(projects, f, indent=2, ensure_ascii=False)
+    # Convert to DataFrame and save as parquet
+    df = pd.DataFrame(projects)
+    df.to_parquet(output_file, index=False, engine='pyarrow')
 
 
 def save_metadata(metadata: Dict[str, Any], output_file: Path) -> None:
