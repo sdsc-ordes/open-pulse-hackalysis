@@ -1,4 +1,3 @@
-import pytest
 import re
 
 from hackathon_analysis import __version__

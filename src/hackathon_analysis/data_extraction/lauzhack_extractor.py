@@ -327,7 +327,8 @@ def extract_project_info(
         for div in element.find_all("div"):
             text = div.get_text(strip=True)
             # Skip very short divs or those that look like metadata
-            if text and len(text) > 20:
+            short_text_size = 20
+            if text and len(text) > short_text_size:
                 content_divs.append(text)
 
         if content_divs:
@@ -335,7 +336,8 @@ def extract_project_info(
                 content_divs[:2])  # First 2 content divs
 
         # Also check paragraphs
-        if "description" not in project or len(project["description"]) < 50:
+        min_desc_length = 35
+        if "description" not in project or len(project["description"]) < min_desc_length:
             desc_paragraphs = element.find_all("p")
             if desc_paragraphs:
                 description_parts = [p.get_text(strip=True)

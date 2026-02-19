@@ -63,7 +63,7 @@ def extract_lauzhack(output_folder: Path, years: Optional[str] = None):
                 f"    ✓ Completed: {stats['total_projects']} projects extracted"
             )
         except Exception as e:
-            typer.echo(f"    ✗ Error: {str(e)}", err=True)
+            typer.echo(f"    ✗ Error: {e}", err=True)
 
     # Upload entire output folder to Hugging Face
     # This maintains the folder structure (lauzhack-2023/, lauzhack-2024/, etc.)

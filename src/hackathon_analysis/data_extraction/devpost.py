@@ -5,7 +5,6 @@ from typing import Optional
 
 import typer
 
-from hackathon_analysis.data_extraction.common_utils import upload_to_hugging_face
 from hackathon_analysis.data_extraction.config import HACKATHON_CONFIGS
 
 
@@ -67,7 +66,7 @@ def extract_devpost(
         # - now write the merged data to output_projects and the hackathon metadata to output_metadata, make sure that it has github url of the project, if it's not there then put N/A there and other links should be in labelled columns too
 
         status_msg = f"{year} extraction" if year else "Extraction"
-        typer.echo(f"    ℹ {status_msg} not yet implemented; exiting with error status.")
+        typer.echo(f"    {status_msg} not yet implemented; exiting with error status.")
         raise typer.Exit(code=1)
 
     # Upload entire output folder to Hugging Face

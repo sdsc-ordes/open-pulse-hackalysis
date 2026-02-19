@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from typing import Optional
 
 import typer
 from dotenv import load_dotenv
@@ -50,6 +49,6 @@ def upload_to_hugging_face(
     except Exception as e:
         if verbose:
             typer.echo(
-                f"  ⚠ Warning: Failed to upload to Hugging Face: {str(e)}", err=True
+                f"  ⚠ Warning: Failed to upload to Hugging Face: {e}", err=True
             )
         return False
