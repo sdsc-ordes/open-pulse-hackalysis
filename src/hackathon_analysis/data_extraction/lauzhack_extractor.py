@@ -45,13 +45,9 @@ def _extract_footer_team_and_url(
         url = link_elem["href"]
         link_elem.decompose()
 
-    # Replace <br> with newlines for proper splitting
-    for br in footer_elem.find_all("br"):
-        br.replace_with("\n")
-
-    footer_text = footer_elem.get_text(strip=True)
+    # Get footer text with newlines preserved between elements for proper splitting
+    footer_text = footer_elem.get_text(separator="\n", strip=True)
     lines = [line.strip() for line in footer_text.split("\n") if line.strip()]
-
     team = None
     if lines:
         team_line = lines[0]
