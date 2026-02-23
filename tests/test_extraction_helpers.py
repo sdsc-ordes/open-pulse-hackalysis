@@ -28,8 +28,7 @@ def test_normalize_title_removes_extra_spaces():
     result = _normalize_title(messy_title)
     expected = "lauzhack project 2025"
 
-    assert result == expected, f"Expected '{expected}' but got '{result}'"
-
+    assert result == expected
 
 if __name__ == "__main__":
     # Run this test directly with: python tests/test_extraction_basic.py
