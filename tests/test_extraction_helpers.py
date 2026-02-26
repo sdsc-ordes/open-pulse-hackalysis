@@ -11,6 +11,11 @@ from hackathon_analysis.data_extraction.lauzhack_extractor import (
     _extract_footer_team_and_url,
     _extract_title_with_awards,
     _extract_descriptions,
+    _extract_details_project,
+    _extract_article_project,
+    _extract_fallback_project,
+    _extract_url_and_team,
+    _extract_description_from_article_details,
 )
 from bs4 import BeautifulSoup
 
@@ -267,6 +272,422 @@ def test_extract_descriptions_from_paragraphs():
     assert "Second paragraph" in project["description"]
 
 
+def test_extract_details_project_complete_structure():
+    """
+    Test extraction of complete project from details element (2023/2024 format).
+
+    What this function does (MOST IMPORTANT):
+    - This is the primary extraction method for 2023/2024 projects
+    - Handles HTML structure: <details><summary>Title</summary>description<footer>team, url</footer></details>
+    - Extracts title, awards, description, team and URL
+    - Handles award badges in <mark> tags
+
+    Why we need this:
+    - 2023/2024 LauzHack uses collapsible <details> structure
+    - Majority of projects use this format
+    """
+    # ARRANGE: Create complete details element with all fields
+    html = """
+    <details>
+        <summary>Smart IoT Home Hub</summary>
+        <mark>Best IoT Solution</mark>
+        <mark>Innovation Award</mark>
+        <p>A comprehensive home automation system using IoT sensors and machine learning algorithms to optimize energy consumption.</p>
+        <p>Features include real-time monitoring, predictive analytics, and mobile app integration.</p>
+        <footer>
+            <a href="https://github.com/team/iot-hub">Project GitHub</a>
+            <br>
+            Emma Johnson, Marco Rossi, Yuki Tanaka
+        </footer>
+    </details>
+    """
+    element = BeautifulSoup(html, "html.parser").find("details")
+    project = {}
+
+    # ACT: Extract complete project
+    _extract_details_project(element, project)
+
+    # ASSERT: All fields should be populated
+    assert project["title"] == "Smart IoT Home Hub"
+    assert project["awards"] == ["Best IoT Solution", "Innovation Award"]
+    assert project["categories"] == ["Best IoT Solution", "Innovation Award"]
+    assert "home automation system" in project["description"]
+    assert "real-time monitoring" in project["description"]
+    assert project["url"] == "https://github.com/team/iot-hub"
+    assert project["team"] == ["Emma Johnson", "Marco Rossi", "Yuki Tanaka"]
+
+
+def test_extract_details_project_minimal_data():
+    """
+    Test details project extraction with only required title field.
+
+    What this tests:
+    - Handles minimal HTML with just summary (title)
+    - Gracefully handles missing awards, description, footer
+    - Still produces valid project dict
+    """
+    # ARRANGE: Minimal details element with only summary
+    html = """
+    <details>
+        <summary>Minimal Project</summary>
+    </details>
+    """
+    element = BeautifulSoup(html, "html.parser").find("details")
+    project = {}
+
+    # ACT: Extract from minimal element
+    _extract_details_project(element, project)
+
+    # ASSERT: Should still have title even with bare minimum
+    assert project["title"] == "Minimal Project"
+    assert "description" not in project  # No description provided
+    assert "team" not in project  # No footer
+    assert "url" not in project  # No footer
+
+
+def test_extract_details_project_no_footer():
+    """
+    Test details project extraction when footer is missing.
+
+    What this tests:
+    - Handles missing footer gracefully
+    - Extracts title and description when footer absent
+    - Doesn't crash on missing optional fields
+    """
+    # ARRANGE: Details element with content but no footer
+    html = """
+    <details>
+        <summary>Web App Project</summary>
+        <p>A reactive web application built with Vue.js and FastAPI backend.</p>
+        <p>Full-stack solution with real-time updates.</p>
+    </details>
+    """
+    element = BeautifulSoup(html, "html.parser").find("details")
+    project = {}
+
+    # ACT: Extract
+    _extract_details_project(element, project)
+
+    # ASSERT: Should get title and description but no URL/team
+    assert project["title"] == "Web App Project"
+    assert "web application" in project["description"]
+    assert "url" not in project
+    assert "team" not in project
+
+
+def test_extract_article_project_complete_2025_format():
+    """
+    Test extraction of complete project from article element (2025 format).
+
+    What this function does (VERY IMPORTANT):
+    - This is the primary extraction method for 2025 projects
+    - Orchestrates title, description, URL, and team extraction
+    - Handles article-based HTML structure with header, content, footer
+    - Delegates to specialized helper functions
+
+    Why we need this:
+    - 2025 LauzHack uses article-based format (different from 2023/2024)
+    - Critical for parsing latest hackathon data
+    """
+    # ARRANGE: Create complete 2025-style article element
+    html = """
+    <article>
+        <header>
+            <b>Mobile Health Tracker</b>
+            <mark>Best Health Tech</mark>
+            <mark>Most Innovative</mark>
+        </header>
+        <p>A comprehensive mobile application for tracking daily health metrics and personalized wellness recommendations.</p>
+        <footer>
+            <a href="https://github.com/health-team/tracker">GitHub Link</a>
+            <br>
+            Sarah Chen, David Kim, Lisa Martinez
+        </footer>
+    </article>
+    """
+    element = BeautifulSoup(html, "html.parser").find("article")
+    project = {}
+
+    # ACT: Extract article project (orchestrates title, description, url, team)
+    _extract_article_project(element, project)
+
+    # ASSERT: Should have all fields populated through delegation to helpers
+    assert project["title"] == "Mobile Health Tracker"
+    assert "awards" in project
+    assert "Best Health Tech" in project["awards"]
+    assert "Most Innovative" in project["awards"]
+    assert "health metrics" in project.get("description", "")
+    assert project["url"] == "https://github.com/health-team/tracker"
+    assert "Sarah Chen" in project.get("team", [])
+
+
+def test_extract_article_project_minimal():
+    """
+    Test article project extraction with minimal content.
+
+    What this tests:
+    - Article with only title, no awards or description
+    - Still produces valid partial project
+    - Handles gracefully missing optional fields
+    """
+    # ARRANGE: Minimal article with only header and title
+    html = """
+    <article>
+        <header>
+            <b>Student Portal</b>
+        </header>
+    </article>
+    """
+    element = BeautifulSoup(html, "html.parser").find("article")
+    project = {}
+
+    # ACT: Extract
+    _extract_article_project(element, project)
+
+    # ASSERT: Should at least have title
+    assert project["title"] == "Student Portal"
+    # description, url, team may not be present
+
+
+def test_extract_fallback_project_with_h1_and_paragraph():
+    """
+    Test fallback project extraction using heading and paragraph.
+
+    What this function does (IMPORTANT):
+    - Used when primary extraction methods (details/article) fail
+    - Tries multiple selectors: h1→h2→h3 for title
+    - Tries multiple selectors: p/description/project-description for description
+    - Provides robustness for malformed HTML
+
+    Why we need this:
+    - Some hackathon pages may have non-standard HTML structures
+    - Ensures we can extract data from varied formats
+    """
+    # ARRANGE: Create HTML with h1 and paragraph (non-standard)
+    html = """
+    <div class="project-card">
+        <h1>AI Photo Editor</h1>
+        <p>Machine learning-powered photo editing with intelligent filters and auto-enhancement capabilities.</p>
+    </div>
+    """
+    element = BeautifulSoup(html, "html.parser").find("div")
+    project = {}
+
+    # ACT: Extract using fallback
+    _extract_fallback_project(element, project)
+
+    # ASSERT: Should extract from h1 and p
+    assert project["title"] == "AI Photo Editor"
+    assert "Machine learning" in project["description"]
+
+
+def test_extract_fallback_project_with_class_selectors():
+    """
+    Test fallback extraction using class-based selectors.
+
+    What this tests:
+    - Uses .title and .project-description classes when tags don't work
+    - Fallback chain: h1→h2→h3→.title→.project-title
+    - Fallback chain: p→.description→.project-description
+    """
+    # ARRANGE: HTML with class-based elements instead of standard tags
+    html = """
+    <div class="project-wrapper">
+        <div class="title">Blockchain Voting System</div>
+        <div class="project-description">A secure voting platform using blockchain technology to ensure transparency and prevent fraud.</div>
+    </div>
+    """
+    element = BeautifulSoup(html, "html.parser").find("div")
+    project = {}
+
+    # ACT: Extract with class selectors
+    _extract_fallback_project(element, project)
+
+    # ASSERT: Should extract from class-based selectors
+    assert project["title"] == "Blockchain Voting System"
+    assert "blockchain" in project["description"].lower()
+
+
+def test_extract_url_and_team_from_footer():
+    """
+    Test URL and team extraction from article footer (primary method).
+
+    What this function does (IMPORTANT):
+    - Tries multiple extraction methods for URL: footer first, then generic <a> tag
+    - Tries multiple extraction methods for team: footer first, then .team/.authors classes
+    - Handles cases where both are present
+    - Critical for 2025 article-based extraction
+
+    Why we need this:
+    - Different article structures may put URL/team in different places
+    - Need robust fallback chain for reliable extraction
+    """
+    # ARRANGE: Article with footer containing URL and team
+    html = """
+    <article>
+        <header><b>Data Viz Tool</b></header>
+        <p>Interactive visualization framework for big data analysis.</p>
+        <footer>
+            <a href="https://github.com/viz-team/tool">Project Website</a>
+            <br>
+            Alex Wong, Maria Santos
+        </footer>
+    </article>
+    """
+    element = BeautifulSoup(html, "html.parser").find("article")
+    project = {}
+
+    # ACT: Extract URL and team
+    _extract_url_and_team(element, project)
+
+    # ASSERT: Should extract both from footer
+    assert project["url"] == "https://github.com/viz-team/tool"
+    assert project["team"] == ["Alex Wong", "Maria Santos"]
+
+
+def test_extract_url_and_team_with_generic_link_fallback():
+    """
+    Test URL extraction from generic <a> tag when footer missing.
+
+    What this tests:
+    - Falls back to first <a> tag if no footer link
+    - Skips anchor links (#) and javascript: links
+    - Handles missing footer gracefully
+    """
+    # ARRANGE: Article with generic link but no footer
+    html = """
+    <article>
+        <header><b>Game Engine</b></header>
+        <a href="https://example.com/game-engine">Play Demo</a>
+        <p>A lightweight game engine for indie developers.</p>
+    </article>
+    """
+    element = BeautifulSoup(html, "html.parser").find("article")
+    project = {}
+
+    # ACT: Extract URL (fallback to generic <a>)
+    _extract_url_and_team(element, project)
+
+    # ASSERT: Should extract from generic link
+    assert project["url"] == "https://example.com/game-engine"
+    assert "team" not in project  # No team info
+
+
+def test_extract_url_and_team_from_class_attributes():
+    """
+    Test team extraction from .team or .authors class when footer missing.
+
+    What this tests:
+    - Falls back to .team or .authors class elements
+    - Parses comma-separated team members
+    - Handles single team member (no commas)
+    """
+    # ARRANGE: Article with team in class attribute
+    html = """
+    <article>
+        <header><b>ML Pipeline</b></header>
+        <div class="team">Dr. Chen Liu, Prof. James Brown, Dr. Priya Sharma</div>
+        <p>Automated machine learning pipeline for data scientists.</p>
+    </article>
+    """
+    element = BeautifulSoup(html, "html.parser").find("article")
+    project = {}
+
+    # ACT: Extract team from class
+    _extract_url_and_team(element, project)
+
+    # ASSERT: Should extract team from class selector
+    assert project["team"] == ["Dr. Chen Liu",
+                               "Prof. James Brown", "Dr. Priya Sharma"]
+    assert "url" not in project
+
+
+def test_extract_description_from_article_details_complete():
+    """
+    Test description extraction from nested details element in article.
+
+    What this function does:
+    - Used in 2025 articles that have nested <details> for expandable descriptions
+    - Extracts text from details body, skipping the summary
+    - Combines multiple text fragments
+    - Returns summary as fallback if no body content
+
+    Why we need this:
+    - 2025 format may wrap descriptions in <details> elements
+    - Need to skip <summary> and extract actual content
+    """
+    # ARRANGE: Create article with nested details element
+    html = """
+    <article>
+        <details>
+            <summary>Project Overview</summary>
+            <p>This is a comprehensive smart contract platform for secure financial transactions.</p>
+            <p>It supports multiple blockchains and provides high-level security guarantees.</p>
+            <div>Key features include atomic swaps and cross-chain compatibility.</div>
+        </details>
+    </article>
+    """
+    element = BeautifulSoup(html, "html.parser").find("article")
+
+    # ACT: Extract description from details
+    result = _extract_description_from_article_details(element)
+
+    # ASSERT: Should get content but not summary
+    assert result is not None
+    assert "smart contract" in result
+    assert "atomic swaps" in result
+    assert "Project Overview" not in result  # summary excluded
+
+
+def test_extract_description_from_article_details_fallback_to_summary():
+    """
+    Test description extraction falls back to summary when no body content.
+
+    What this tests:
+    - When details element has only summary, return summary as description
+    - Handles minimal nested details elements
+    """
+    # ARRANGE: Details with only summary (no body content)
+    html = """
+    <article>
+        <details>
+            <summary>Minimal description text</summary>
+        </details>
+    </article>
+    """
+    element = BeautifulSoup(html, "html.parser").find("article")
+
+    # ACT: Extract description
+    result = _extract_description_from_article_details(element)
+
+    # ASSERT: Should fall back to summary
+    assert result == "Minimal description text"
+
+
+def test_extract_description_from_article_details_no_details():
+    """
+    Test extraction when article has no details element.
+
+    What this tests:
+    - Returns None if no details element found
+    - Gracefully handles missing nested elements
+    """
+    # ARRANGE: Article without details element
+    html = """
+    <article>
+        <h2>Just a Title</h2>
+        <p>Some description</p>
+    </article>
+    """
+    element = BeautifulSoup(html, "html.parser").find("article")
+
+    # ACT: Extract description
+    result = _extract_description_from_article_details(element)
+
+    # ASSERT: Should return None
+    assert result is None
+
+
 if __name__ == "__main__":
     # Run this test directly with: python tests/test_extraction_basic.py
     test_normalize_title_removes_extra_spaces()
@@ -278,4 +699,17 @@ if __name__ == "__main__":
     test_extract_title_with_awards_fallback_to_h2()
     test_extract_descriptions_from_content_divs()
     test_extract_descriptions_from_paragraphs()
+    test_extract_details_project_complete_structure()
+    test_extract_details_project_minimal_data()
+    test_extract_details_project_no_footer()
+    test_extract_article_project_complete_2025_format()
+    test_extract_article_project_minimal()
+    test_extract_fallback_project_with_h1_and_paragraph()
+    test_extract_fallback_project_with_class_selectors()
+    test_extract_url_and_team_from_footer()
+    test_extract_url_and_team_with_generic_link_fallback()
+    test_extract_url_and_team_from_class_attributes()
+    test_extract_description_from_article_details_complete()
+    test_extract_description_from_article_details_fallback_to_summary()
+    test_extract_description_from_article_details_no_details()
     print("✓ All tests passed!")
