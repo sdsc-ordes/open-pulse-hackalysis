@@ -14,31 +14,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-nix
+      - uses: actions/setup-python@v4
         with:
-          cachix_cache_name: "${{ secrets.CACHIX_CACHE_NAME }}"
-          cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          python-version: "3.13"
+      - name: install uv
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install uv
       - name: lint
-        run: just ci just lint
+        run: just lint
 
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-nix
+      - uses: actions/setup-python@v4
         with:
-          cachix_cache_name: "${{ secrets.CACHIX_CACHE_NAME }}"
-          cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          python-version: "3.13"
+      - name: install uv
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install uv
       - name: build
-        run: just ci just build
+        run: just build
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-nix
+      - uses: actions/setup-python@v4
         with:
-          cachix_cache_name: "${{ secrets.CACHIX_CACHE_NAME }}"
-          cachix_auth_token: "${{ secrets.CACHIX_AUTH_TOKEN }}"
+          python-version: "3.13"
+      - name: install uv
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install uv
       - name: test
-        run: just ci just test
+        run: just test
