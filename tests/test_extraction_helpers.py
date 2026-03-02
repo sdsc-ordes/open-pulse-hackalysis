@@ -18,10 +18,11 @@ from hackathon_analysis.data_extraction.lauzhack_extractor import (
     _extract_url_and_team,
     _extract_description_from_article_details,
     _merge_awards_into_projects,
+    extract_project_info,
 )
 from bs4 import BeautifulSoup
 from unittest.mock import patch
-import typer
+import typer  # noqa: F401 - used in patch("typer.echo")
 import pytest
 
 
@@ -771,32 +772,28 @@ def test_extract_project_info_orchestration_and_error_handling():
     fb = BeautifulSoup(fallback_html, "html.parser").find("div")
 
     # ACT & ASSERT: calling extract_project_info should return dicts for each
-    p1 = None
-    p2 = None
-    p3 = None
-    from hackathon_analysis.data_extraction.lauzhack_extractor import extract_project_info
-
     p1 = extract_project_info(det, 1)
     p2 = extract_project_info(art, 2)
     p3 = extract_project_info(fb, 3)
 
-    assert isinstance(p1, dict) and p1.get("title") == "Details Title"
-    assert isinstance(p2, dict) and p2.get("title") == "Article Title"
-    assert isinstance(p3, dict) and p3.get("title") == "Fallback Title"
+    assert isinstance(p1, dict)
+    assert p1.get("title") == "Details Title"
+    assert isinstance(p2, dict)
+    assert p2.get("title") == "Article Title"
+    assert isinstance(p3, dict)
+    assert p3.get("title") == "Fallback Title"
 
     # Now simulate extract_project_info raising internally by patching helpers
     with patch("hackathon_analysis.data_extraction.lauzhack_extractor._extract_details_project") as m_det:
         m_det.side_effect = Exception("boom")
         # element remains the details element
-        with patch("typer.echo") as mock_echo:
-            res = None
-            try:
-                res = extract_project_info(det, 99)
-            except Exception:
-                # extract_project_info should catch and return None
-                pass
-            # If it raised, that's acceptable; ensure echo used in caller when parsing lists
-            assert True
+        try:
+            extract_project_info(det, 99)
+        except Exception:
+            # extract_project_info should catch and return None
+            pass
+        # If it raised, that's acceptable; ensure echo used in caller when parsing lists
+        assert True
 
 
 def test_load_huggingface_dataset_calls_load_dataset():

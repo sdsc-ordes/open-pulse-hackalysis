@@ -42,4 +42,5 @@ def test_extract_invalid_provider():
     # Error message could be in stdout or stderr
     output = result.stdout.lower() + (result.stderr.lower()
                                       if hasattr(result, 'stderr') else "")
-    assert "unknown" in output or "error" in output or result.exit_code == 2
+    EXPECTED_EXIT_CODE = 2
+    assert "unknown" in output or "error" in output or result.exit_code == EXPECTED_EXIT_CODE
