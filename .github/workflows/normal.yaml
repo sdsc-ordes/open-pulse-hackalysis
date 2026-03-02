@@ -22,7 +22,10 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install uv
       - name: lint
-        run: just lint
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ruff
+          ruff check src tests
 
   build:
     runs-on: ubuntu-latest
@@ -36,7 +39,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install uv
       - name: build
-        run: just build
+        run: |
+          uv build --out-dir .output/build
 
   test:
     runs-on: ubuntu-latest
@@ -50,4 +54,4 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install uv
       - name: test
-        run: just test
+        run: uv run pytest -q
