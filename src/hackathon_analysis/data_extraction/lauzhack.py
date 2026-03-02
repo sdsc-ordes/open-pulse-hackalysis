@@ -5,7 +5,7 @@ from typing import Optional
 
 import typer
 
-from hackathon_analysis.data_extraction.common_utils import upload_to_hugging_face
+from hackathon_analysis.common_utils import upload_to_hugging_face
 from hackathon_analysis.data_extraction.config import HACKATHON_CONFIGS
 from hackathon_analysis.data_extraction.lauzhack_extractor import (
     extract_year_data,
