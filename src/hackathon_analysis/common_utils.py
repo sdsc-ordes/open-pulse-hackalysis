@@ -48,3 +48,39 @@ def upload_to_hugging_face(
                 f"  ⚠ Warning: Failed to upload to Hugging Face: {e}", err=True
             )
         return False
+
+
+def load_huggingface_dataset(
+    repo_id: str,
+    split: str | list[str] = "train",
+    cache_dir: str | None = None,
+    **kwargs,
+):
+    """
+    Load a dataset from the Hugging Face Hub using the `datasets` library.
+
+    Args:
+        repo_id: Name of the dataset repo on Hugging Face (e.g., "sdsco/example").
+        split: Split name or list of splits to retrieve (default "train").
+        cache_dir: Optional cache directory to use for downloaded data.
+        **kwargs: Additional keyword args forwarded to :func:`datasets.load_dataset`.
+
+    Returns:
+        A ``datasets.Dataset`` or ``datasets.DatasetDict`` depending on the split.
+
+    This helper centralizes dataset loading so callers don't need to import
+    `datasets` directly, and allows mocking in tests.
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError as e:
+        raise RuntimeError(
+            "datasets library is required to load Hugging Face datasets") from e
+
+    load_args = {"path": repo_id, "split": split}
+    if cache_dir:
+        load_args["cache_dir"] = cache_dir
+    # merge kwargs
+    load_args.update(kwargs)
+
+    return load_dataset(**load_args)
