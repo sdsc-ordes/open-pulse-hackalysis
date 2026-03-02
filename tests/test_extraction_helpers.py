@@ -800,8 +800,7 @@ def test_load_huggingface_dataset_calls_load_dataset():
     """
     Verify that load_huggingface_dataset forwards parameters to datasets.load_dataset.
     """
-    from hackathon_analysis.common_utils import load_huggingface_dataset
-    # patch the underlying datasets.load_dataset function (common_utils imports lazily)
+    from hackathon_analysis.common_utils import load_huggingface_dataset  # noqa: PLC0415
     with patch("datasets.load_dataset") as mock_load:
         mock_load.return_value = "mocked"
         result = load_huggingface_dataset(
@@ -821,8 +820,7 @@ def test_load_huggingface_dataset_missing_library():
     """
     If the datasets package is missing, the helper should raise a RuntimeError.
     """
-    import builtins
-    # simulate ImportError when datasets is imported
+    import builtins  # noqa: PLC0415
     real_import = builtins.__import__
 
     def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
@@ -832,7 +830,7 @@ def test_load_huggingface_dataset_missing_library():
 
     builtins.__import__ = fake_import
     try:
-        from hackathon_analysis.common_utils import load_huggingface_dataset
+        from hackathon_analysis.common_utils import load_huggingface_dataset  # noqa: PLC0415
         with pytest.raises(RuntimeError):
             load_huggingface_dataset("repo")
     finally:

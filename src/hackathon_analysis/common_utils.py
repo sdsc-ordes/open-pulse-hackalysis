@@ -72,7 +72,7 @@ def load_huggingface_dataset(
     `datasets` directly, and allows mocking in tests.
     """
     try:
-        from datasets import load_dataset
+        from datasets import load_dataset  # noqa: PLC0415
     except ImportError as e:
         raise RuntimeError(
             "datasets library is required to load Hugging Face datasets") from e
