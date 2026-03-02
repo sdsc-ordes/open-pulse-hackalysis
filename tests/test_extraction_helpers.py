@@ -22,6 +22,7 @@ from hackathon_analysis.data_extraction.lauzhack_extractor import (
 from bs4 import BeautifulSoup
 from unittest.mock import patch
 import typer
+import pytest
 
 
 def test_normalize_title_removes_extra_spaces():
@@ -798,8 +799,51 @@ def test_extract_project_info_orchestration_and_error_handling():
             assert True
 
 
+def test_load_huggingface_dataset_calls_load_dataset():
+    """
+    Verify that load_huggingface_dataset forwards parameters to datasets.load_dataset.
+    """
+    from hackathon_analysis.common_utils import load_huggingface_dataset
+    # patch the underlying datasets.load_dataset function (common_utils imports lazily)
+    with patch("datasets.load_dataset") as mock_load:
+        mock_load.return_value = "mocked"
+        result = load_huggingface_dataset(
+            "some/repo", split="test", cache_dir="/tmp/cache", foo="bar")
+
+    mock_load.assert_called_once()
+    # extract the call arguments to inspect
+    called_kwargs = mock_load.call_args.kwargs
+    assert called_kwargs["path"] == "some/repo"
+    assert called_kwargs["split"] == "test"
+    assert called_kwargs["cache_dir"] == "/tmp/cache"
+    assert called_kwargs["foo"] == "bar"
+    assert result == "mocked"
+
+
+def test_load_huggingface_dataset_missing_library():
+    """
+    If the datasets package is missing, the helper should raise a RuntimeError.
+    """
+    import builtins
+    # simulate ImportError when datasets is imported
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "datasets":
+            raise ImportError("no datasets")
+        return real_import(name, globals, locals, fromlist, level)
+
+    builtins.__import__ = fake_import
+    try:
+        from hackathon_analysis.common_utils import load_huggingface_dataset
+        with pytest.raises(RuntimeError):
+            load_huggingface_dataset("repo")
+    finally:
+        builtins.__import__ = real_import
+
+
 if __name__ == "__main__":
-    # Run this test directly with: python tests/test_extraction_basic.py
+    # Run this test directly with: python tests/test_extraction_helpers.py
     test_normalize_title_removes_extra_spaces()
     test_build_dedup_key_creates_normalized_key()
     test_extract_footer_team_and_url_with_valid_footer()
@@ -822,4 +866,9 @@ if __name__ == "__main__":
     test_extract_description_from_article_details_complete()
     test_extract_description_from_article_details_fallback_to_summary()
     test_extract_description_from_article_details_no_details()
+    test_parse_projects_from_elements_handles_errors()
+    test_merge_awards_into_projects_merges_by_title()
+    test_extract_project_info_orchestration_and_error_handling()
+    test_load_huggingface_dataset_calls_load_dataset()
+    test_load_huggingface_dataset_missing_library()
     print("✓ All tests passed!")
