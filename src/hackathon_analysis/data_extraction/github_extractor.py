@@ -7,6 +7,12 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+def get_project_urls():
+    # Placeholder function to return a list of GitHub repository URLs
+    # In practice, this could read from a file, database, or API
+    #
+    return []
+
 
 def parse_github_repo_url(url: str) -> Tuple[str, str]:
     url = url.strip()
@@ -172,8 +178,8 @@ def fetch_repo_metadata(
 
         try:
             data = client.graphql(REPO_QUERY, {"owner": owner, "name": repo})
-            r = data.get("repository")
-            if not r:
+            repo_data = data.get("repository")
+            if not repo_data:
                 out[url] = {"error": "repo not found or no access", "owner": owner, "repo": repo}
                 continue
 
@@ -184,7 +190,7 @@ def fetch_repo_metadata(
             first_commit_oid = None
             last_commit_oid = None
 
-            dbr = r.get("defaultBranchRef")
+            dbr = repo_data.get("defaultBranchRef")
             if dbr and dbr.get("target") and dbr["target"].get("__typename") == "Commit":
                 default_branch = dbr.get("name")
                 tgt = dbr["target"]
@@ -258,28 +264,28 @@ def fetch_repo_metadata(
                     pass
 
             languages_top = []
-            for e in ((r.get("languages") or {}).get("edges") or []):
+            for e in ((repo_data.get("languages") or {}).get("edges") or []):
                 node = e.get("node") or {}
                 languages_top.append({"language": node.get("name"), "size": e.get("size")})
 
             out[url] = {
                 "owner": owner,
                 "repo": repo,
-                "name_with_owner": r.get("nameWithOwner"),
-                "url": r.get("url"),
-                "is_fork": r.get("isFork"),
-                "parent_repo": (r.get("parent") or {}).get("nameWithOwner"),
-                "parent_url": (r.get("parent") or {}).get("url"),
-                "description": r.get("description"),
-                "is_private": r.get("isPrivate"),
-                "is_archived": r.get("isArchived"),
-                "created_at": r.get("createdAt"),
-                "updated_at": r.get("updatedAt"),
+                "name_with_owner": repo_data.get("nameWithOwner"),
+                "url": repo_data.get("url"),
+                "is_fork": repo_data.get("isFork"),
+                "parent_repo": (repo_data.get("parent") or {}).get("nameWithOwner"),
+                "parent_url": (repo_data.get("parent") or {}).get("url"),
+                "description": repo_data.get("description"),
+                "is_private": repo_data.get("isPrivate"),
+                "is_archived": repo_data.get("isArchived"),
+                "created_at": repo_data.get("createdAt"),
+                "updated_at": repo_data.get("updatedAt"),
                 "readme_title": readme_title,
-                "stars": r.get("stargazerCount"),
-                "forks": r.get("forkCount"),
-                "watchers": (r.get("watchers") or {}).get("totalCount"),
-                "primary_language": (r.get("primaryLanguage") or {}).get("name"),
+                "stars": repo_data.get("stargazerCount"),
+                "forks": repo_data.get("forkCount"),
+                "watchers": (repo_data.get("watchers") or {}).get("totalCount"),
+                "primary_language": (repo_data.get("primaryLanguage") or {}).get("name"),
                 "languages_top": languages_top,
                 "default_branch": default_branch,
                 "commit_count_default_branch": commit_count,
@@ -287,10 +293,10 @@ def fetch_repo_metadata(
                 "last_commit_date_default_branch": last_commit_date,
                 "first_commit_oid_default_branch": first_commit_oid,
                 "last_commit_oid_default_branch": last_commit_oid,
-                "pull_requests_total": (r.get("pullRequests") or {}).get("totalCount"),
-                "pull_requests_open": (r.get("openPullRequests") or {}).get("totalCount"),
-                "issues_total": (r.get("issues") or {}).get("totalCount"),
-                "issues_open": (r.get("openIssues") or {}).get("totalCount"),
+                "pull_requests_total": (repo_data.get("pullRequests") or {}).get("totalCount"),
+                "pull_requests_open": (repo_data.get("openPullRequests") or {}).get("totalCount"),
+                "issues_total": (repo_data.get("issues") or {}).get("totalCount"),
+                "issues_open": (repo_data.get("openIssues") or {}).get("totalCount"),
                 "contributors_top": contributors,
                 "files_root_entries": root_entries,
                 "files_total_count": files_total,
@@ -304,7 +310,8 @@ def fetch_repo_metadata(
 
 
 if __name__ == "__main__":
-    urls = ["https://github.com/sdsc-ordes/gimie"]
+    urls = ["https://github.com/sdsc-ordes/gimie"] # call the repo url functions here to get the metadata list for all repos
     token = os.getenv("GITHUB_TOKEN")
     print("token_present", bool(token), "token_len", len(token or ""))
     print(fetch_repo_metadata(urls, token=token, top_contributors=8))
+    #write metadata to json and parquet files in the output folder for each hackathon repository
