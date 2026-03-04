@@ -5,7 +5,7 @@ authors = [
 ]
 description = "Analyse performance of open source and hackathon repositories"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 version = "0.1.0"
 
 dependencies = [
