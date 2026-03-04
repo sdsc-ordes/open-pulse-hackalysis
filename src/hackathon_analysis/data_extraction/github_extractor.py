@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
+import pandas as pd
 import requests
 
-def get_project_urls():
-    # Placeholder function to return a list of GitHub repository URLs
-    # In practice, this could read from a file, database, or API
-    #
-    return []
 
 
 def parse_github_repo_url(url: str) -> Tuple[str, str]:
@@ -209,7 +206,6 @@ def fetch_repo_metadata(
                     except Exception:
                         pass
 
-            # README title
             readme_title = None
             try:
                 readme = client.rest_get(f"/repos/{owner}/{repo}/readme")
@@ -220,7 +216,6 @@ def fetch_repo_metadata(
             except Exception:
                 pass
 
-            # Contributors
             contributors = []
             try:
                 lim = max(1, min(top_contributors, 100))
@@ -240,7 +235,6 @@ def fetch_repo_metadata(
             except Exception:
                 pass
 
-            # Files info (root + total counts via tree)
             root_entries = []
             files_total = None
             dirs_total = None
@@ -309,9 +303,116 @@ def fetch_repo_metadata(
     return out
 
 
+def extract_github_urls_from_df(df: pd.DataFrame) -> List[str]:
+    """
+    Best-effort extraction of GitHub repo URLs from any string-like columns.
+    """
+    url_re = re.compile(r"(https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
+    urls: set[str] = set()
+
+    preferred_cols = []
+    for c in df.columns:
+        cl = str(c).lower()
+        if any(k in cl for k in ["github", "repo", "repository", "url", "source", "link"]):
+            preferred_cols.append(c)
+
+    cols_to_scan = preferred_cols + [c for c in df.columns if c not in preferred_cols]
+
+    for c in cols_to_scan:
+        s = df[c]
+        if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
+            continue
+        for v in s.dropna().astype(str).tolist():
+            for m in url_re.findall(v):
+                urls.add(m.rstrip(").,;]}>"))
+
+    return sorted(urls)
+
+
+def write_repo_metadata_outputs(
+    hackathon_folder: Path,
+    provider_prefix: str,
+    repo_meta: Dict[str, Dict[str, Any]],
+) -> Dict[str, Path]:
+    """
+    Writes raw JSON and a flattened parquet table into the hackathon_folder.
+    Returns paths.
+    """
+    hackathon_folder.mkdir(parents=True, exist_ok=True)
+
+    raw_json_path = hackathon_folder / f"{provider_prefix}_github_repo_metadata.json"
+    parquet_path = hackathon_folder / f"{provider_prefix}_github_repo_metadata.parquet"
+
+    raw_json_path.write_text(json.dumps(repo_meta, indent=2, sort_keys=True), encoding="utf-8")
+
+    rows = []
+    for url, meta in repo_meta.items():
+        row = {"input_url": url}
+        if isinstance(meta, dict):
+            row.update(meta)
+        rows.append(row)
+
+    df = pd.DataFrame(rows)
+
+    for col in ["languages_top", "contributors_top", "files_root_entries"]:
+        if col in df.columns:
+            df[col] = df[col].apply(
+                lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else x
+            )
+
+    df.to_parquet(parquet_path, index=False)
+
+    return {"json": raw_json_path, "parquet": parquet_path}
+
+
+def run_repo_metadata_from_projects_parquet(
+    projects_parquet: Path,
+    hackathon_folder: Path,
+    provider_prefix: str,
+    *,
+    token: Optional[str] = None,
+    top_contributors: int = 8,
+    max_root_entries: int = 200,
+) -> Dict[str, Any]:
+    """
+    End to end helper:
+    reads projects parquet
+    extracts GitHub URLs
+    fetches repo metadata
+    writes outputs
+
+    Returns a small summary dict.
+    """
+    df = pd.read_parquet(projects_parquet)
+    print("projects rows:", len(df), "cols:", list(df.columns)[:10])
+    urls = extract_github_urls_from_df(df)
+    print("github urls found:", len(urls))
+
+    repo_meta = fetch_repo_metadata(
+        urls,
+        token=token,
+        top_contributors=top_contributors,
+        max_root_entries=max_root_entries,
+    )
+
+    out_paths = write_repo_metadata_outputs(
+        hackathon_folder=hackathon_folder,
+        provider_prefix=provider_prefix,
+        repo_meta=repo_meta,
+    )
+
+    return {
+        "projects_parquet": str(projects_parquet),
+        "hackathon_folder": str(hackathon_folder),
+        "provider_prefix": provider_prefix,
+        "repos_found": len(urls),
+        "outputs": {k: str(v) for k, v in out_paths.items()},
+    }
+
+
 if __name__ == "__main__":
-    urls = ["https://github.com/sdsc-ordes/gimie"] # call the repo url functions here to get the metadata list for all repos
+    urls = ["https://github.com/sdsc-ordes/gimie"]
     token = os.getenv("GITHUB_TOKEN")
     print("token_present", bool(token), "token_len", len(token or ""))
-    print(fetch_repo_metadata(urls, token=token, top_contributors=8))
-    #write metadata to json and parquet files in the output folder for each hackathon repository
+    meta = fetch_repo_metadata(urls, token=token, top_contributors=8)
+    print(json.dumps(meta, indent=2))
