@@ -61,7 +61,7 @@ def extract(
 
 
 @app.command(name="github-extract")
-def github_extract(
+def github_extract( # noqa: PLR0913 because we want to keep all these parameters defined below
     output_folder: Annotated[
         Path,
         typer.Option("--output_folder", "-o", help="Root folder holding extracted hackathon data"),
