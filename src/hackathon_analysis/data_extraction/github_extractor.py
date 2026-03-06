@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import requests
+import logging
 
 
 
@@ -161,15 +162,10 @@ query RepoMeta($owner: String!, $name: String!) {
 """
 
 
-def fetch_repo_metadata(
-    repo_urls: List[str],
-    token: Optional[str] = None,
-    top_contributors: int = 10,
-    max_root_entries: int = 200,
-) -> Dict[str, Dict[str, Any]]:
+def fetch_repo_metadata(repo_urls: List[str], token: Optional[str] = None, top_contributors: int = 10, max_root_entries: int = 200,) -> Dict[str, Dict[str, Any]]:
     client = GitHubClient(token=token)
     out: Dict[str, Dict[str, Any]] = {}
-
+    print(f"Fetching metadata for {len(repo_urls)} repositories from GitHub...")
     for url in repo_urls:
         owner, repo = parse_github_repo_url(url)
 
@@ -304,29 +300,40 @@ def fetch_repo_metadata(
 
 
 def extract_github_urls_from_df(df: pd.DataFrame) -> List[str]:
-    """
-    Best-effort extraction of GitHub repo URLs from any string-like columns.
-    """
-    url_re = re.compile(r"(https?://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
+    logging.basicConfig(level=logging.INFO)
+
+    if "url" not in df.columns:
+        logging.error("Column 'url' not found in dataframe")
+        return []
+
+    url_re = re.compile(
+        r"https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)",
+        re.IGNORECASE,
+    )
+
     urls: set[str] = set()
+    total_matches = 0
 
-    preferred_cols = []
-    for c in df.columns:
-        cl = str(c).lower()
-        if any(k in cl for k in ["github", "repo", "repository", "url", "source", "link"]):
-            preferred_cols.append(c)
+    logging.info(f"Scanning {len(df)} project rows from column 'url'")
 
-    cols_to_scan = preferred_cols + [c for c in df.columns if c not in preferred_cols]
+    for idx, cell in df["url"].dropna().astype(str).items():
+        matches = url_re.findall(cell)
+        logging.info(f"row={idx} repo_urls_found={len(matches)} title='{df.loc[idx].get('title', '')[:50]}'")
 
-    for c in cols_to_scan:
-        s = df[c]
-        if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
-            continue
-        for v in s.dropna().astype(str).tolist():
-            for m in url_re.findall(v):
-                urls.add(m.rstrip(").,;]}>"))
+        for owner, repo in matches:
+
+            repo = repo.rstrip(").,;]}>#")
+            if repo.lower().endswith(".git"):
+                repo = repo[:-4]
+
+            urls.add(f"https://github.com/{owner}/{repo}")
+            total_matches += 1
+
+    logging.info(f"Total repo URL matches found: {total_matches}")
+    logging.info(f"Unique GitHub repos extracted: {len(urls)}")
 
     return sorted(urls)
+
 
 
 def write_repo_metadata_outputs(
@@ -414,5 +421,6 @@ if __name__ == "__main__":
     urls = ["https://github.com/sdsc-ordes/gimie"]
     token = os.getenv("GITHUB_TOKEN")
     print("token_present", bool(token), "token_len", len(token or ""))
+    print("fetching metadata for:", urls)
     meta = fetch_repo_metadata(urls, token=token, top_contributors=8)
     print(json.dumps(meta, indent=2))
