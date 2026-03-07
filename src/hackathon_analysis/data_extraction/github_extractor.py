@@ -11,15 +11,16 @@ import requests
 import logging
 
 
-
 def parse_github_repo_url(url: str) -> Tuple[str, str]:
     url = url.strip()
 
-    ssh = re.match(r"^git@github\.com:(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$", url)
+    ssh = re.match(
+        r"^git@github\.com:(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$", url)
     if ssh:
         return ssh.group("owner"), ssh.group("repo")
 
-    m = re.match(r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/#?]+)", url)
+    m = re.match(
+        r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/#?]+)", url)
     if not m:
         raise ValueError(f"Not a GitHub repo URL: {url}")
 
@@ -28,6 +29,70 @@ def parse_github_repo_url(url: str) -> Tuple[str, str]:
     if repo.endswith(".git"):
         repo = repo[:-4]
     return owner, repo
+
+
+def parse_github_url(url: str) -> Tuple[str, Optional[str]]:
+    """Parse a GitHub URL and return (owner, repo).
+
+    Returns (owner, None) for organization URLs like https://github.com/owner/
+    Returns (owner, repo) for repository URLs like https://github.com/owner/repo
+    """
+    url = url.strip().rstrip("/")
+
+    ssh_match = re.match(
+        r"^git@github\.com:(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$", url)
+    if ssh_match:
+        return ssh_match.group("owner"), ssh_match.group("repo")
+
+    https_match = re.match(
+        r"^https?://github\.com/(?P<owner>[^/]+)(?:/(?P<repo>[^/#?]+))?", url)
+    if not https_match:
+        raise ValueError(f"Not a GitHub URL: {url}")
+
+    owner = https_match.group("owner")
+    repo = https_match.group("repo")
+
+    if repo:
+        if repo.endswith(".git"):
+            repo = repo[:-4]
+        return owner, repo
+
+    return owner, None
+
+
+def fetch_org_repos(client: "GitHubClient", org: str) -> List[Tuple[str, str]]:
+    """Fetch all repositories from a GitHub organization.
+
+    Returns list of (owner, repo) tuples.
+    """
+    repos = []
+    page = 1
+    per_page = 100
+
+    while True:
+        try:
+            org_repos = client.rest_get(
+                f"/orgs/{org}/repos",
+                {"type": "public", "per_page": per_page,
+                    "page": page, "sort": "updated"}
+            )
+            if not org_repos:
+                break
+
+            for repo_data in org_repos:
+                if not repo_data.get("archived", False):
+                    repos.append((org, repo_data["name"]))
+
+            if len(org_repos) < per_page:
+                break
+
+            page += 1
+        except Exception as e:
+            logging.warning(
+                f"Error fetching repos for organization '{org}': {e}")
+            break
+
+    return repos
 
 
 def extract_readme_title(md: str) -> Optional[str]:
@@ -61,14 +126,16 @@ def get_first_and_last_commit_dates_rest(
 ) -> Tuple[Optional[str], Optional[str]]:
     path = f"/repos/{owner}/{repo}/commits"
 
-    newest_json, headers = client.rest_get_with_headers(path, {"sha": branch, "per_page": 1, "page": 1})
+    newest_json, headers = client.rest_get_with_headers(
+        path, {"sha": branch, "per_page": 1, "page": 1})
     last_date = newest_json[0]["commit"]["committer"]["date"] if newest_json else None
 
     last_page = _parse_last_page_from_link(headers.get("Link", ""))
     if not last_page:
         return None, last_date
 
-    oldest_json = client.rest_get(path, {"sha": branch, "per_page": 1, "page": last_page})
+    oldest_json = client.rest_get(
+        path, {"sha": branch, "per_page": 1, "page": last_page})
     first_date = oldest_json[0]["commit"]["committer"]["date"] if oldest_json else None
 
     return first_date, last_date
@@ -83,7 +150,8 @@ class GitHubClient:
         self.timeout_s = timeout_s
 
     def headers(self) -> Dict[str, str]:
-        h = {"Accept": "application/vnd.github+json", "User-Agent": "repo-metadata-fetcher"}
+        h = {"Accept": "application/vnd.github+json",
+             "User-Agent": "repo-metadata-fetcher"}
         if self.token:
             h["Authorization"] = f"Bearer {self.token}"
         return h
@@ -165,7 +233,8 @@ query RepoMeta($owner: String!, $name: String!) {
 def fetch_repo_metadata(repo_urls: List[str], token: Optional[str] = None, top_contributors: int = 10, max_root_entries: int = 200,) -> Dict[str, Dict[str, Any]]:
     client = GitHubClient(token=token)
     out: Dict[str, Dict[str, Any]] = {}
-    print(f"Fetching metadata for {len(repo_urls)} repositories from GitHub...")
+    print(
+        f"Fetching metadata for {len(repo_urls)} repositories from GitHub...")
     for url in repo_urls:
         owner, repo = parse_github_repo_url(url)
 
@@ -173,7 +242,8 @@ def fetch_repo_metadata(repo_urls: List[str], token: Optional[str] = None, top_c
             data = client.graphql(REPO_QUERY, {"owner": owner, "name": repo})
             repo_data = data.get("repository")
             if not repo_data:
-                out[url] = {"error": "repo not found or no access", "owner": owner, "repo": repo}
+                out[url] = {"error": "repo not found or no access",
+                            "owner": owner, "repo": repo}
                 continue
 
             default_branch = None
@@ -207,7 +277,8 @@ def fetch_repo_metadata(repo_urls: List[str], token: Optional[str] = None, top_c
                 readme = client.rest_get(f"/repos/{owner}/{repo}/readme")
                 b64 = (readme or {}).get("content") or ""
                 if b64:
-                    md = base64.b64decode(b64).decode("utf-8", errors="replace")
+                    md = base64.b64decode(b64).decode(
+                        "utf-8", errors="replace")
                     readme_title = extract_readme_title(md)
             except Exception:
                 pass
@@ -236,27 +307,35 @@ def fetch_repo_metadata(repo_urls: List[str], token: Optional[str] = None, top_c
             dirs_total = None
             if default_branch:
                 try:
-                    root = client.rest_get(f"/repos/{owner}/{repo}/contents/", {"ref": default_branch})
+                    root = client.rest_get(
+                        f"/repos/{owner}/{repo}/contents/", {"ref": default_branch})
                     if isinstance(root, list):
                         for item in root[:max_root_entries]:
                             root_entries.append(
-                                {"path": item.get("path"), "type": item.get("type"), "size": item.get("size")}
+                                {"path": item.get("path"), "type": item.get(
+                                    "type"), "size": item.get("size")}
                             )
 
-                    branch = client.rest_get(f"/repos/{owner}/{repo}/branches/{default_branch}")
-                    tree_sha = (branch.get("commit") or {}).get("commit", {}).get("tree", {}).get("sha")
+                    branch = client.rest_get(
+                        f"/repos/{owner}/{repo}/branches/{default_branch}")
+                    tree_sha = (branch.get("commit") or {}).get(
+                        "commit", {}).get("tree", {}).get("sha")
                     if tree_sha:
-                        tree = client.rest_get(f"/repos/{owner}/{repo}/git/trees/{tree_sha}", {"recursive": "1"})
+                        tree = client.rest_get(
+                            f"/repos/{owner}/{repo}/git/trees/{tree_sha}", {"recursive": "1"})
                         nodes = tree.get("tree") or []
-                        files_total = sum(1 for n in nodes if n.get("type") == "blob")
-                        dirs_total = sum(1 for n in nodes if n.get("type") == "tree")
+                        files_total = sum(
+                            1 for n in nodes if n.get("type") == "blob")
+                        dirs_total = sum(
+                            1 for n in nodes if n.get("type") == "tree")
                 except Exception:
                     pass
 
             languages_top = []
             for e in ((repo_data.get("languages") or {}).get("edges") or []):
                 node = e.get("node") or {}
-                languages_top.append({"language": node.get("name"), "size": e.get("size")})
+                languages_top.append(
+                    {"language": node.get("name"), "size": e.get("size")})
 
             out[url] = {
                 "owner": owner,
@@ -299,41 +378,63 @@ def fetch_repo_metadata(repo_urls: List[str], token: Optional[str] = None, top_c
     return out
 
 
-def extract_github_urls_from_df(df: pd.DataFrame) -> List[str]:
+def extract_github_urls_from_df(df: pd.DataFrame, token: Optional[str] = None) -> List[str]:
     logging.basicConfig(level=logging.INFO)
 
     if "url" not in df.columns:
         logging.error("Column 'url' not found in dataframe")
         return []
 
+    # Updated regex to capture organization URLs (single segment) and repo URLs (two segments)
     url_re = re.compile(
-        r"https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)",
+        r"https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+)(?:/([A-Za-z0-9_.-]+))?",
         re.IGNORECASE,
     )
 
     urls: set[str] = set()
+    org_urls: set[str] = set()  # Track original org URLs for logging
     total_matches = 0
+    client = GitHubClient(token=token) if token else None
 
     logging.info(f"Scanning {len(df)} project rows from column 'url'")
 
     for idx, cell in df["url"].dropna().astype(str).items():
         matches = url_re.findall(cell)
-        logging.info(f"row={idx} repo_urls_found={len(matches)} title='{df.loc[idx].get('title', '')[:50]}'")
+        title = df.loc[idx].get('title', '')[
+            :50] if 'title' in df.columns else ''
+        logging.info(
+            f"row={idx} repo_urls_found={len(matches)} title='{title}'")
 
         for owner, repo in matches:
-
-            repo = repo.rstrip(").,;]}>#")
-            if repo.lower().endswith(".git"):
-                repo = repo[:-4]
-
-            urls.add(f"https://github.com/{owner}/{repo}")
-            total_matches += 1
+            if repo:
+                # It's a repository URL
+                repo = repo.rstrip(").,;]}>#")
+                if repo.lower().endswith(".git"):
+                    repo = repo[:-4]
+                urls.add(f"https://github.com/{owner}/{repo}")
+                total_matches += 1
+            else:
+                # It's an organization URL - fetch its repositories
+                org_url = f"https://github.com/{owner}"
+                if org_url not in org_urls and client:
+                    org_urls.add(org_url)
+                    logging.info(
+                        f"Fetching repositories from organization: {owner}")
+                    try:
+                        org_repos = fetch_org_repos(client, owner)
+                        for org, repo_name in org_repos:
+                            urls.add(f"https://github.com/{org}/{repo_name}")
+                            total_matches += 1
+                        logging.info(
+                            f"Found {len(org_repos)} repositories in organization '{owner}'")
+                    except Exception as e:
+                        logging.warning(
+                            f"Failed to fetch repositories for organization '{owner}': {e}")
 
     logging.info(f"Total repo URL matches found: {total_matches}")
     logging.info(f"Unique GitHub repos extracted: {len(urls)}")
 
     return sorted(urls)
-
 
 
 def write_repo_metadata_outputs(
@@ -347,10 +448,13 @@ def write_repo_metadata_outputs(
     """
     hackathon_folder.mkdir(parents=True, exist_ok=True)
 
-    raw_json_path = hackathon_folder / f"{provider_prefix}_github_repo_metadata.json"
-    parquet_path = hackathon_folder / f"{provider_prefix}_github_repo_metadata.parquet"
+    raw_json_path = hackathon_folder / \
+        f"{provider_prefix}_github_repo_metadata.json"
+    parquet_path = hackathon_folder / \
+        f"{provider_prefix}_github_repo_metadata.parquet"
 
-    raw_json_path.write_text(json.dumps(repo_meta, indent=2, sort_keys=True), encoding="utf-8")
+    raw_json_path.write_text(json.dumps(
+        repo_meta, indent=2, sort_keys=True), encoding="utf-8")
 
     rows = []
     for url, meta in repo_meta.items():
@@ -364,7 +468,8 @@ def write_repo_metadata_outputs(
     for col in ["languages_top", "contributors_top", "files_root_entries"]:
         if col in df.columns:
             df[col] = df[col].apply(
-                lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else x
+                lambda x: json.dumps(x, ensure_ascii=False) if isinstance(
+                    x, (list, dict)) else x
             )
 
     df.to_parquet(parquet_path, index=False)
@@ -392,7 +497,7 @@ def run_repo_metadata_from_projects_parquet(
     """
     df = pd.read_parquet(projects_parquet)
     print("projects rows:", len(df), "cols:", list(df.columns)[:10])
-    urls = extract_github_urls_from_df(df)
+    urls = extract_github_urls_from_df(df, token=token)
     print("github urls found:", len(urls))
 
     repo_meta = fetch_repo_metadata(
