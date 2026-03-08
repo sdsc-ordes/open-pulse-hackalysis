@@ -664,6 +664,235 @@ def extract_github_urls_from_df(df: pd.DataFrame, token: Optional[str] = None) -
     return sorted(urls)
 
 
+def build_project_repo_mapping(
+    df: pd.DataFrame,
+    token: Optional[str] = None,
+    project_id_col: str = "id",
+    project_title_col: str = "title",
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Build per-project GitHub repo mapping while preserving project row identity.
+
+    Returns:
+    - project_rows: one entry per input project row with derived ids and repo URLs
+    - unique_repo_urls: deduplicated repo URLs across all projects
+    """
+    if "url" not in df.columns:
+        logging.error("Column 'url' not found in dataframe")
+        return [], []
+
+    url_re = re.compile(
+        r"https?://(?:www\.)?github\.com/([A-Za-z0-9_.-]+)(?:/([A-Za-z0-9_.-]+))?",
+        re.IGNORECASE,
+    )
+
+    client = GitHubClient(token=token) if token else None
+    org_repo_cache: Dict[str, List[str]] = {}
+    project_rows: List[Dict[str, Any]] = []
+    all_repo_urls: set[str] = set()
+    seen_uids: set[str] = set()
+
+    logging.info(f"Building project-repo mapping from {len(df)} project rows")
+
+    for idx, row in df.iterrows():
+        cell = str(row.get("url", "") or "")
+        matches = url_re.findall(cell)
+        repo_urls: set[str] = set()
+
+        for owner, repo in matches:
+            if repo:
+                repo = repo.rstrip(").,;]}>#")
+                if repo.lower().endswith(".git"):
+                    repo = repo[:-4]
+                repo_urls.add(f"https://github.com/{owner}/{repo}")
+                continue
+
+            if not client:
+                continue
+
+            org = owner
+            if org not in org_repo_cache:
+                logging.info(f"Fetching repositories from organization: {org}")
+                try:
+                    org_repo_cache[org] = [
+                        f"https://github.com/{org_name}/{repo_name}"
+                        for org_name, repo_name in fetch_org_repos(client, org)
+                    ]
+                    logging.info(
+                        f"Found {len(org_repo_cache[org])} repositories in organization '{org}'"
+                    )
+                except Exception as e:
+                    logging.warning(
+                        f"Failed to fetch repositories for organization '{org}': {e}"
+                    )
+                    org_repo_cache[org] = []
+
+            repo_urls.update(org_repo_cache[org])
+
+        project_id = row.get(project_id_col) if project_id_col in df.columns else None
+        if pd.isna(project_id):
+            project_id = None
+        project_id = str(project_id).strip() if project_id is not None else None
+        if project_id == "":
+            project_id = None
+
+        project_title = row.get(project_title_col) if project_title_col in df.columns else None
+        if pd.isna(project_title):
+            project_title = None
+        project_title = str(project_title).strip() if project_title is not None else None
+        if project_title == "":
+            project_title = None
+
+        base_uid = f"{project_id_col}:{project_id}" if project_id else f"row_index:{idx}"
+        project_uid = base_uid
+        if project_uid in seen_uids:
+            project_uid = f"{base_uid}|row:{idx}"
+        seen_uids.add(project_uid)
+
+        repo_urls_list = sorted(repo_urls)
+        all_repo_urls.update(repo_urls_list)
+
+        project_rows.append(
+            {
+                "source_row_index": int(idx) if isinstance(idx, int) else str(idx),
+                "project_uid": project_uid,
+                "project_id": project_id,
+                "project_title": project_title,
+                "github_repo_urls": repo_urls_list,
+                "github_repo_count": len(repo_urls_list),
+            }
+        )
+
+    logging.info(f"Unique GitHub repos extracted: {len(all_repo_urls)}")
+    return project_rows, sorted(all_repo_urls)
+
+
+def write_project_metadata_outputs(
+    hackathon_folder: Path,
+    provider_prefix: str,
+    projects_df: pd.DataFrame,
+    project_rows: List[Dict[str, Any]],
+    repo_meta: Dict[str, Dict[str, Any]],
+) -> Dict[str, Path]:
+    """Write project-level GitHub outputs (one row per input project)."""
+    hackathon_folder.mkdir(parents=True, exist_ok=True)
+    project_json_path = hackathon_folder / f"{provider_prefix}_github_project_metadata.json"
+    project_parquet_path = hackathon_folder / f"{provider_prefix}_github_project_metadata.parquet"
+
+    # Keep project-level output schema explicit to avoid non-JSON-native parquet types.
+    base_columns = [
+        "id",
+        "title",
+        "description",
+        "url",
+        "team",
+        "tags",
+        "image_url",
+        "awards",
+        "categories",
+        "hackathon_name",
+        "hackathon_year",
+        "hackathon_location",
+    ]
+    selected_base_columns = [c for c in base_columns if c in projects_df.columns]
+    projects_by_index: Dict[str, Dict[str, Any]] = {}
+    def _normalize_base_value(v: Any) -> Any:
+        if v is None:
+            return None
+
+        if isinstance(v, dict):
+            return {str(k): _normalize_base_value(val) for k, val in v.items()}
+
+        if isinstance(v, (list, tuple, set)):
+            return [_normalize_base_value(val) for val in v]
+
+        # numpy/pandas array-likes
+        if hasattr(v, "tolist") and not isinstance(v, (str, bytes, bytearray)):
+            return _normalize_base_value(v.tolist())
+
+        # numpy scalars
+        if hasattr(v, "item") and not isinstance(v, (str, bytes, bytearray)):
+            item_v = v.item()
+            if item_v is not v:
+                return _normalize_base_value(item_v)
+
+        # datetime-like objects
+        if hasattr(v, "isoformat") and not isinstance(v, (str, bytes, bytearray)):
+            return v.isoformat()
+
+        na_mask = pd.isna(v)
+        # pd.isna can return array-like for non-scalar values; only coerce scalar NA.
+        if not hasattr(na_mask, "__len__"):
+            return None if bool(na_mask) else v
+        return v
+
+    for i, row in projects_df.iterrows():
+        idx_key = str(i if not isinstance(i, int) else int(i))
+        row_data = {c: row[c] for c in selected_base_columns}
+        projects_by_index[idx_key] = {
+            c: _normalize_base_value(v) for c, v in row_data.items()
+        }
+
+    merged_rows: List[Dict[str, Any]] = []
+    for proj in project_rows:
+        idx_key = str(proj["source_row_index"])
+        base = dict(projects_by_index.get(idx_key, {}))
+
+        repo_urls = proj.get("github_repo_urls") or []
+        repo_items = []
+        for u in repo_urls:
+            m = repo_meta.get(u)
+            if isinstance(m, dict):
+                repo_items.append({"input_url": u, **m})
+            else:
+                repo_items.append({"input_url": u, "error": "metadata missing"})
+
+        merged_rows.append(
+            {
+                **base,
+                "project_uid": proj.get("project_uid"),
+                "project_id": proj.get("project_id"),
+                "project_title": proj.get("project_title"),
+                "github_repo_urls": repo_urls,
+                "github_repo_count": proj.get("github_repo_count", len(repo_urls)),
+                "github_repos_metadata": repo_items,
+            }
+        )
+
+    def _deep_to_python(v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return {str(k): _deep_to_python(val) for k, val in v.items()}
+        if isinstance(v, (list, tuple, set)):
+            return [_deep_to_python(val) for val in v]
+        if hasattr(v, "tolist") and not isinstance(v, (str, bytes, bytearray)):
+            return _deep_to_python(v.tolist())
+        if hasattr(v, "item") and not isinstance(v, (str, bytes, bytearray)):
+            item_v = v.item()
+            if item_v is not v:
+                return _deep_to_python(item_v)
+        return v
+
+    merged_rows = _deep_to_python(merged_rows)
+
+    project_json_path.write_text(
+        json.dumps(merged_rows, indent=2, sort_keys=True, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    project_df = pd.DataFrame(merged_rows)
+    for col in project_df.columns:
+        if project_df[col].map(lambda x: isinstance(x, (list, dict))).any():
+            project_df[col] = project_df[col].apply(
+                lambda x: json.dumps(x, ensure_ascii=False)
+                if isinstance(x, (list, dict))
+                else x
+            )
+
+    project_df.to_parquet(project_parquet_path, index=False)
+    return {"project_json": project_json_path, "project_parquet": project_parquet_path}
+
+
 def write_repo_metadata_outputs(
     hackathon_folder: Path,
     provider_prefix: str,
@@ -697,7 +926,9 @@ def write_repo_metadata_outputs(
     for col in ["topics", "languages_top", "contributors_top", "files_root_entries"]:
         if col in df.columns:
             df[col] = df[col].apply(
-                lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else x
+                lambda x: json.dumps(x, ensure_ascii=False)
+                if isinstance(x, (list, dict))
+                else x
             )
 
     df.to_parquet(parquet_path, index=False)
@@ -717,6 +948,8 @@ def run_repo_metadata_from_projects_parquet(
     fetch_readme: bool = True,
     readme_size_limit_bytes: Optional[int] = None,
     readme_text_max_bytes: int = 100_000,
+    write_repo_level_output: bool = True,
+    write_project_level_output: bool = True,
 ) -> Dict[str, Any]:
     """
     End to end helper:
@@ -729,7 +962,8 @@ def run_repo_metadata_from_projects_parquet(
     """
     df = pd.read_parquet(projects_parquet)
     logging.info(f"projects rows={len(df)} cols={list(df.columns)[:10]}")
-    urls = extract_github_urls_from_df(df, token=token)
+
+    project_rows, urls = build_project_repo_mapping(df, token=token)
     logging.info(f"github urls found={len(urls)}")
 
     repo_meta = fetch_repo_metadata(
@@ -743,16 +977,32 @@ def run_repo_metadata_from_projects_parquet(
         readme_text_max_bytes=readme_text_max_bytes,
     )
 
-    out_paths = write_repo_metadata_outputs(
-        hackathon_folder=hackathon_folder,
-        provider_prefix=provider_prefix,
-        repo_meta=repo_meta,
-    )
+    out_paths: Dict[str, Path] = {}
+    if write_repo_level_output:
+        out_paths.update(
+            write_repo_metadata_outputs(
+                hackathon_folder=hackathon_folder,
+                provider_prefix=provider_prefix,
+                repo_meta=repo_meta,
+            )
+        )
+
+    if write_project_level_output:
+        out_paths.update(
+            write_project_metadata_outputs(
+                hackathon_folder=hackathon_folder,
+                provider_prefix=provider_prefix,
+                projects_df=df,
+                project_rows=project_rows,
+                repo_meta=repo_meta,
+            )
+        )
 
     return {
         "projects_parquet": str(projects_parquet),
         "hackathon_folder": str(hackathon_folder),
         "provider_prefix": provider_prefix,
+        "projects_rows": len(df),
         "repos_found": len(urls),
         "outputs": {k: str(v) for k, v in out_paths.items()},
     }
