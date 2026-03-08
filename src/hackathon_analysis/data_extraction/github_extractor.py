@@ -96,14 +96,26 @@ def fetch_org_repos(client: "GitHubClient", org: str) -> List[Tuple[str, str]]:
     return repos
 
 
-def extract_readme_title(md: str) -> Optional[str]:
+def extract_readme_title(md: str, max_lines: int = 50) -> Optional[str]:
+    """Extract README title efficiently with single pass.
+
+    Looks for H1 header first, then returns first non-empty line.
+    Only scans first max_lines to optimize performance.
+    """
     if not md:
         return None
-    for line in md.splitlines():
+
+    for i, line in enumerate(md.splitlines()):
+        if i >= max_lines:
+            break
         s = line.strip()
         if s.startswith("# "):
             return s[2:].strip()
-    for line in md.splitlines():
+
+    # Single pass for first non-empty line
+    for i, line in enumerate(md.splitlines()):
+        if i >= max_lines:
+            break
         s = line.strip()
         if s:
             return s[:200]
@@ -232,8 +244,6 @@ def flatten_languages(repo_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             }
         )
     return languages_top
-
-
 
 
 class GitHubClient:
@@ -374,12 +384,16 @@ def fetch_repo_metadata(
     token: Optional[str] = None,
     top_contributors: int = 10,
     max_root_entries: int = 200,
-    include_readme_text: bool = True,
+    include_readme_text: bool = False,
+    fetch_readme: bool = True,
+    readme_size_limit_bytes: Optional[int] = None,
+    readme_text_max_bytes: int = 100_000,
 ) -> Dict[str, Dict[str, Any]]:
     client = GitHubClient(token=token)
     out: Dict[str, Dict[str, Any]] = {}
 
-    logging.info(f"Fetching metadata for {len(repo_urls)} repositories from GitHub")
+    logging.info(
+        f"Fetching metadata for {len(repo_urls)} repositories from GitHub")
 
     for url in repo_urls:
         owner, repo = parse_github_repo_url(url)
@@ -427,23 +441,42 @@ def fetch_repo_metadata(
             readme_title = None
             readme_text = None
             readme_length = None
-            try:
-                readme = client.rest_get(f"/repos/{owner}/{repo}/readme")
-                b64 = (readme or {}).get("content") or ""
-                if b64:
-                    md = base64.b64decode(b64).decode("utf-8", errors="replace")
-                    md = normalize_readme_text(md)
-                    readme_title = extract_readme_title(md)
-                    if include_readme_text:
-                        readme_text = md
-                    readme_length = len(md)
-            except Exception as e:
-                logging.warning(f"Could not fetch README for {owner}/{repo}: {e}")
+            if fetch_readme:
+                try:
+                    readme = client.rest_get(f"/repos/{owner}/{repo}/readme")
+                    b64 = (readme or {}).get("content") or ""
+                    if b64:
+                        # Skip decoding if size limit is set and exceeded (fast path)
+                        if readme_size_limit_bytes is not None and len(b64) > readme_size_limit_bytes:
+                            logging.warning(
+                                f"README too large for {owner}/{repo} (base64: {len(b64)} bytes), skipping"
+                            )
+                        else:
+                            # Decode and process README
+                            md = base64.b64decode(b64).decode("utf-8", errors="replace")
+                            md = normalize_readme_text(md)
+                            readme_length = len(md)
+                            readme_title = extract_readme_title(md)
+
+                            # Truncate for storage if needed
+                            if len(md) > readme_text_max_bytes:
+                                logging.warning(
+                                    f"README for {owner}/{repo} truncated from {len(md)} to {readme_text_max_bytes} bytes"
+                                )
+                                if include_readme_text:
+                                    readme_text = md[:readme_text_max_bytes]
+                            else:
+                                if include_readme_text:
+                                    readme_text = md
+                except Exception as e:
+                    logging.warning(
+                        f"Could not fetch README for {owner}/{repo}: {e}")
 
             contributors = []
             contributors_count = None
             try:
-                contributors_count = get_contributors_count_rest(client, owner, repo)
+                contributors_count = get_contributors_count_rest(
+                    client, owner, repo)
 
                 lim = max(1, min(top_contributors, 100))
                 contribs = client.rest_get(
@@ -460,7 +493,8 @@ def fetch_repo_metadata(
                             }
                         )
             except Exception as e:
-                logging.warning(f"Could not fetch contributors for {owner}/{repo}: {e}")
+                logging.warning(
+                    f"Could not fetch contributors for {owner}/{repo}: {e}")
 
             root_entries = []
             files_total = None
@@ -481,18 +515,23 @@ def fetch_repo_metadata(
                                 }
                             )
 
-                    branch = client.rest_get(f"/repos/{owner}/{repo}/branches/{default_branch}")
-                    tree_sha = (branch.get("commit") or {}).get("commit", {}).get("tree", {}).get("sha")
+                    branch = client.rest_get(
+                        f"/repos/{owner}/{repo}/branches/{default_branch}")
+                    tree_sha = (branch.get("commit") or {}).get(
+                        "commit", {}).get("tree", {}).get("sha")
                     if tree_sha:
                         tree = client.rest_get(
                             f"/repos/{owner}/{repo}/git/trees/{tree_sha}",
                             {"recursive": "1"},
                         )
                         nodes = tree.get("tree") or []
-                        files_total = sum(1 for n in nodes if n.get("type") == "blob")
-                        dirs_total = sum(1 for n in nodes if n.get("type") == "tree")
+                        files_total = sum(
+                            1 for n in nodes if n.get("type") == "blob")
+                        dirs_total = sum(
+                            1 for n in nodes if n.get("type") == "tree")
                 except Exception as e:
-                    logging.warning(f"Could not fetch file tree info for {owner}/{repo}: {e}")
+                    logging.warning(
+                        f"Could not fetch file tree info for {owner}/{repo}: {e}")
 
             topics = extract_topics(repo_data)
             languages_top = flatten_languages(repo_data)
@@ -636,8 +675,10 @@ def write_repo_metadata_outputs(
     """
     hackathon_folder.mkdir(parents=True, exist_ok=True)
 
-    raw_json_path = hackathon_folder / f"{provider_prefix}_github_repo_metadata.json"
-    parquet_path = hackathon_folder / f"{provider_prefix}_github_repo_metadata.parquet"
+    raw_json_path = hackathon_folder / \
+        f"{provider_prefix}_github_repo_metadata.json"
+    parquet_path = hackathon_folder / \
+        f"{provider_prefix}_github_repo_metadata.parquet"
 
     raw_json_path.write_text(
         json.dumps(repo_meta, indent=2, sort_keys=True, ensure_ascii=False),
@@ -672,7 +713,10 @@ def run_repo_metadata_from_projects_parquet(
     token: Optional[str] = None,
     top_contributors: int = 8,
     max_root_entries: int = 200,
-    include_readme_text: bool = True,
+    include_readme_text: bool = False,
+    fetch_readme: bool = True,
+    readme_size_limit_bytes: Optional[int] = None,
+    readme_text_max_bytes: int = 100_000,
 ) -> Dict[str, Any]:
     """
     End to end helper:
@@ -694,6 +738,9 @@ def run_repo_metadata_from_projects_parquet(
         top_contributors=top_contributors,
         max_root_entries=max_root_entries,
         include_readme_text=include_readme_text,
+        fetch_readme=fetch_readme,
+        readme_size_limit_bytes=readme_size_limit_bytes,
+        readme_text_max_bytes=readme_text_max_bytes,
     )
 
     out_paths = write_repo_metadata_outputs(
