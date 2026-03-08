@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 import requests
 import logging
+logging.basicConfig(level=logging.INFO)
 
 
 def parse_github_repo_url(url: str) -> Tuple[str, str]:
@@ -109,6 +110,12 @@ def extract_readme_title(md: str) -> Optional[str]:
     return None
 
 
+def normalize_readme_text(md: str) -> str:
+    if not md:
+        return ""
+    return md.replace("\r\n", "\n").strip()
+
+
 def _parse_last_page_from_link(link_header: str) -> Optional[int]:
     if not link_header:
         return None
@@ -139,6 +146,94 @@ def get_first_and_last_commit_dates_rest(
     first_date = oldest_json[0]["commit"]["committer"]["date"] if oldest_json else None
 
     return first_date, last_date
+
+
+def get_contributors_count_rest(
+    client: "GitHubClient",
+    owner: str,
+    repo: str,
+) -> Optional[int]:
+    path = f"/repos/{owner}/{repo}/contributors"
+    _, headers = client.rest_get_with_headers(
+        path,
+        {"per_page": 1, "anon": "true"},
+    )
+
+    last_page = _parse_last_page_from_link(headers.get("Link", ""))
+    if last_page is not None:
+        return last_page
+
+    # if there is no Link header, there may be 0 or 1 page only
+    try:
+        data = client.rest_get(path, {"per_page": 100, "anon": "true"})
+        if isinstance(data, list):
+            return len(data)
+    except Exception:
+        return None
+
+    return None
+
+
+def derive_root_flags(root_entries: List[Dict[str, Any]]) -> Dict[str, bool]:
+    paths = {str(x.get("path", "")).lower() for x in root_entries}
+
+    has_tests = any(
+        p in {"tests", "test"} or p.startswith("tests/") or p.startswith("test/")
+        for p in paths
+    )
+    has_docs = any(
+        p in {"docs", "doc"} or p.startswith("docs/") or p.startswith("doc/")
+        for p in paths
+    )
+    has_ci = any(
+        p.startswith(".github") or p in {".gitlab-ci.yml", "azure-pipelines.yml"}
+        for p in paths
+    )
+    has_docker = any(
+        "docker" in p or p == "dockerfile" or p.endswith("/dockerfile")
+        for p in paths
+    )
+    has_notebooks = any(p.endswith(".ipynb") for p in paths)
+    has_contributing = any("contributing" in p for p in paths)
+    has_license_file = any(p == "license" or p.startswith("license.") for p in paths)
+    has_readme_file = any(p == "readme.md" or p.startswith("readme.") for p in paths)
+
+    return {
+        "has_tests": has_tests,
+        "has_docs": has_docs,
+        "has_ci": has_ci,
+        "has_docker": has_docker,
+        "has_notebooks": has_notebooks,
+        "has_contributing": has_contributing,
+        "has_license_file": has_license_file,
+        "has_readme_file": has_readme_file,
+    }
+
+
+def extract_topics(repo_data: Dict[str, Any]) -> List[str]:
+    nodes = ((repo_data.get("repositoryTopics") or {}).get("nodes") or [])
+    topics = []
+    for n in nodes:
+        topic = n.get("topic") or {}
+        name = topic.get("name")
+        if name:
+            topics.append(name)
+    return topics
+
+
+def flatten_languages(repo_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    languages_top = []
+    for e in ((repo_data.get("languages") or {}).get("edges") or []):
+        node = e.get("node") or {}
+        languages_top.append(
+            {
+                "language": node.get("name"),
+                "size": e.get("size"),
+            }
+        )
+    return languages_top
+
+
 
 
 class GitHubClient:
@@ -193,9 +288,20 @@ class GitHubClient:
 REPO_QUERY = """
 query RepoMeta($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
+    name
     nameWithOwner
     url
     description
+    homepageUrl
+
+    repositoryTopics(first: 20) {
+      nodes {
+        topic {
+          name
+        }
+      }
+    }
+
     isPrivate
     isArchived
     isFork
@@ -205,6 +311,7 @@ query RepoMeta($owner: String!, $name: String!) {
     }
     createdAt
     updatedAt
+    pushedAt
     stargazerCount
     forkCount
     watchers { totalCount }
@@ -212,29 +319,68 @@ query RepoMeta($owner: String!, $name: String!) {
     languages(first: 10, orderBy: {field: SIZE, direction: DESC}) {
       edges { size node { name } }
     }
+
+    licenseInfo {
+      spdxId
+      name
+    }
+
     defaultBranchRef {
       name
       target {
         __typename
         ... on Commit {
-          newest: history(first: 1) { totalCount edges { node { committedDate oid } } }
+          history(first: 1) {
+            totalCount
+            edges {
+              node {
+                committedDate
+                oid
+              }
+            }
+          }
         }
       }
     }
+
     pullRequests { totalCount }
     openPullRequests: pullRequests(states: OPEN) { totalCount }
+    mergedPullRequests: pullRequests(states: MERGED) { totalCount}
+    closedPullRequests: pullRequests(states: CLOSED) { totalCount}
+
     issues { totalCount }
+
     openIssues: issues(states: OPEN) { totalCount }
+
+    closedIssues: issues(states: CLOSED) {
+      totalCount
+    }
+
+    releases {
+      totalCount
+    }
+
+    latestRelease {
+      tagName
+      publishedAt
+    }
   }
 }
 """
 
 
-def fetch_repo_metadata(repo_urls: List[str], token: Optional[str] = None, top_contributors: int = 10, max_root_entries: int = 200,) -> Dict[str, Dict[str, Any]]:
+def fetch_repo_metadata(
+    repo_urls: List[str],
+    token: Optional[str] = None,
+    top_contributors: int = 10,
+    max_root_entries: int = 200,
+    include_readme_text: bool = True,
+) -> Dict[str, Dict[str, Any]]:
     client = GitHubClient(token=token)
     out: Dict[str, Dict[str, Any]] = {}
-    print(
-        f"Fetching metadata for {len(repo_urls)} repositories from GitHub...")
+
+    logging.info(f"Fetching metadata for {len(repo_urls)} repositories from GitHub")
+
     for url in repo_urls:
         owner, repo = parse_github_repo_url(url)
 
@@ -242,49 +388,63 @@ def fetch_repo_metadata(repo_urls: List[str], token: Optional[str] = None, top_c
             data = client.graphql(REPO_QUERY, {"owner": owner, "name": repo})
             repo_data = data.get("repository")
             if not repo_data:
-                out[url] = {"error": "repo not found or no access",
-                            "owner": owner, "repo": repo}
+                out[url] = {
+                    "error": "repo not found or no access",
+                    "owner": owner,
+                    "repo": repo,
+                }
                 continue
 
+            repo_name = repo_data.get("name")
             default_branch = None
             commit_count = None
             first_commit_date = None
             last_commit_date = None
-            first_commit_oid = None
             last_commit_oid = None
 
             dbr = repo_data.get("defaultBranchRef")
             if dbr and dbr.get("target") and dbr["target"].get("__typename") == "Commit":
                 default_branch = dbr.get("name")
-                tgt = dbr["target"]
-
-                newest_edges = (tgt.get("newest") or {}).get("edges") or []
-                commit_count = (tgt.get("newest") or {}).get("totalCount")
+                history = (dbr["target"].get("history") or {})
+                commit_count = history.get("totalCount")
+                newest_edges = history.get("edges") or []
 
                 if newest_edges:
-                    last_commit_oid = newest_edges[0]["node"]["oid"]
-
+                    node = newest_edges[0].get("node") or {}
+                    last_commit_oid = node.get("oid")
+                    # graphQL gives last commit too, but keep REST as source of truth for first/last pair
                 if default_branch:
                     try:
                         first_commit_date, last_commit_date = get_first_and_last_commit_dates_rest(
-                            client, owner, repo, default_branch
+                            client,
+                            owner,
+                            repo,
+                            default_branch,
                         )
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.warning(f"Could not fetch first/last commit dates for {owner}/{repo}: {e}")
 
             readme_title = None
+            readme_text = None
+            readme_length = None
             try:
                 readme = client.rest_get(f"/repos/{owner}/{repo}/readme")
                 b64 = (readme or {}).get("content") or ""
                 if b64:
-                    md = base64.b64decode(b64).decode(
-                        "utf-8", errors="replace")
+                    md = base64.b64decode(b64).decode("utf-8", errors="replace")
+                    md = normalize_readme_text(md)
                     readme_title = extract_readme_title(md)
-            except Exception:
-                pass
+                    if include_readme_text:
+                        readme_text = md
+                    readme_length = len(md)
+            except Exception as e:
+                logging.warning(f"Could not fetch README for {owner}/{repo}: {e}")
 
             contributors = []
+            contributors_count = None
             try:
+                contributors_count = get_contributors_count_rest(client, owner, repo)
+
                 lim = max(1, min(top_contributors, 100))
                 contribs = client.rest_get(
                     f"/repos/{owner}/{repo}/contributors",
@@ -299,8 +459,8 @@ def fetch_repo_metadata(repo_urls: List[str], token: Optional[str] = None, top_c
                                 "html_url": c.get("html_url"),
                             }
                         )
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning(f"Could not fetch contributors for {owner}/{repo}: {e}")
 
             root_entries = []
             files_total = None
@@ -308,68 +468,100 @@ def fetch_repo_metadata(repo_urls: List[str], token: Optional[str] = None, top_c
             if default_branch:
                 try:
                     root = client.rest_get(
-                        f"/repos/{owner}/{repo}/contents/", {"ref": default_branch})
+                        f"/repos/{owner}/{repo}/contents/",
+                        {"ref": default_branch},
+                    )
                     if isinstance(root, list):
                         for item in root[:max_root_entries]:
                             root_entries.append(
-                                {"path": item.get("path"), "type": item.get(
-                                    "type"), "size": item.get("size")}
+                                {
+                                    "path": item.get("path"),
+                                    "type": item.get("type"),
+                                    "size": item.get("size"),
+                                }
                             )
 
-                    branch = client.rest_get(
-                        f"/repos/{owner}/{repo}/branches/{default_branch}")
-                    tree_sha = (branch.get("commit") or {}).get(
-                        "commit", {}).get("tree", {}).get("sha")
+                    branch = client.rest_get(f"/repos/{owner}/{repo}/branches/{default_branch}")
+                    tree_sha = (branch.get("commit") or {}).get("commit", {}).get("tree", {}).get("sha")
                     if tree_sha:
                         tree = client.rest_get(
-                            f"/repos/{owner}/{repo}/git/trees/{tree_sha}", {"recursive": "1"})
+                            f"/repos/{owner}/{repo}/git/trees/{tree_sha}",
+                            {"recursive": "1"},
+                        )
                         nodes = tree.get("tree") or []
-                        files_total = sum(
-                            1 for n in nodes if n.get("type") == "blob")
-                        dirs_total = sum(
-                            1 for n in nodes if n.get("type") == "tree")
-                except Exception:
-                    pass
+                        files_total = sum(1 for n in nodes if n.get("type") == "blob")
+                        dirs_total = sum(1 for n in nodes if n.get("type") == "tree")
+                except Exception as e:
+                    logging.warning(f"Could not fetch file tree info for {owner}/{repo}: {e}")
 
-            languages_top = []
-            for e in ((repo_data.get("languages") or {}).get("edges") or []):
-                node = e.get("node") or {}
-                languages_top.append(
-                    {"language": node.get("name"), "size": e.get("size")})
+            topics = extract_topics(repo_data)
+            languages_top = flatten_languages(repo_data)
+            root_flags = derive_root_flags(root_entries)
+
+            description = repo_data.get("description")
+            homepage_url = repo_data.get("homepageUrl")
 
             out[url] = {
                 "owner": owner,
+                "repo_name": repo_name,
                 "repo": repo,
                 "name_with_owner": repo_data.get("nameWithOwner"),
                 "url": repo_data.get("url"),
+
+                "description": description,
+                "homepage_url": homepage_url,
+                "topics": topics,
+
+                "is_private": repo_data.get("isPrivate"),
+                "is_archived": repo_data.get("isArchived"),
                 "is_fork": repo_data.get("isFork"),
                 "parent_repo": (repo_data.get("parent") or {}).get("nameWithOwner"),
                 "parent_url": (repo_data.get("parent") or {}).get("url"),
-                "description": repo_data.get("description"),
-                "is_private": repo_data.get("isPrivate"),
-                "is_archived": repo_data.get("isArchived"),
+                "default_branch": default_branch,
+
                 "created_at": repo_data.get("createdAt"),
                 "updated_at": repo_data.get("updatedAt"),
-                "readme_title": readme_title,
+                "pushed_at": repo_data.get("pushedAt"),
+
                 "stars": repo_data.get("stargazerCount"),
                 "forks": repo_data.get("forkCount"),
                 "watchers": (repo_data.get("watchers") or {}).get("totalCount"),
+
                 "primary_language": (repo_data.get("primaryLanguage") or {}).get("name"),
                 "languages_top": languages_top,
-                "default_branch": default_branch,
+
+                "license_spdx": (repo_data.get("licenseInfo") or {}).get("spdxId"),
+                "license_name": (repo_data.get("licenseInfo") or {}).get("name"),
+
                 "commit_count_default_branch": commit_count,
                 "first_commit_date_default_branch": first_commit_date,
                 "last_commit_date_default_branch": last_commit_date,
-                "first_commit_oid_default_branch": first_commit_oid,
                 "last_commit_oid_default_branch": last_commit_oid,
                 "pull_requests_total": (repo_data.get("pullRequests") or {}).get("totalCount"),
                 "pull_requests_open": (repo_data.get("openPullRequests") or {}).get("totalCount"),
+                "pull_requests_closed": (repo_data.get("closedPullRequests") or {}).get("totalCount"),
+                "pull_requests_merged": (repo_data.get("mergedPullRequests") or {}).get("totalCount"),
+
                 "issues_total": (repo_data.get("issues") or {}).get("totalCount"),
                 "issues_open": (repo_data.get("openIssues") or {}).get("totalCount"),
+                "issues_closed": (repo_data.get("closedIssues") or {}).get("totalCount"),
+
+                "releases_count": (repo_data.get("releases") or {}).get("totalCount"),
+                "latest_release_tag": (repo_data.get("latestRelease") or {}).get("tagName"),
+                "latest_release_date": (repo_data.get("latestRelease") or {}).get("publishedAt"),
+
+                "contributors_count": contributors_count,
                 "contributors_top": contributors,
+
+                "readme_title": readme_title,
+                "readme_text": readme_text,
+                "readme_length": readme_length,
+
                 "files_root_entries": root_entries,
                 "files_total_count": files_total,
                 "dirs_total_count": dirs_total,
+
+                **root_flags,
             }
 
         except Exception as e:
@@ -379,8 +571,6 @@ def fetch_repo_metadata(repo_urls: List[str], token: Optional[str] = None, top_c
 
 
 def extract_github_urls_from_df(df: pd.DataFrame, token: Optional[str] = None) -> List[str]:
-    logging.basicConfig(level=logging.INFO)
-
     if "url" not in df.columns:
         logging.error("Column 'url' not found in dataframe")
         return []
@@ -400,10 +590,8 @@ def extract_github_urls_from_df(df: pd.DataFrame, token: Optional[str] = None) -
 
     for idx, cell in df["url"].dropna().astype(str).items():
         matches = url_re.findall(cell)
-        title = df.loc[idx].get('title', '')[
-            :50] if 'title' in df.columns else ''
-        logging.info(
-            f"row={idx} repo_urls_found={len(matches)} title='{title}'")
+        title = df.loc[idx].get("title", "")[:50] if "title" in df.columns else ""
+        logging.info(f"row={idx} repo_urls_found={len(matches)} title='{title}'")
 
         for owner, repo in matches:
             if repo:
@@ -448,13 +636,13 @@ def write_repo_metadata_outputs(
     """
     hackathon_folder.mkdir(parents=True, exist_ok=True)
 
-    raw_json_path = hackathon_folder / \
-        f"{provider_prefix}_github_repo_metadata.json"
-    parquet_path = hackathon_folder / \
-        f"{provider_prefix}_github_repo_metadata.parquet"
+    raw_json_path = hackathon_folder / f"{provider_prefix}_github_repo_metadata.json"
+    parquet_path = hackathon_folder / f"{provider_prefix}_github_repo_metadata.parquet"
 
-    raw_json_path.write_text(json.dumps(
-        repo_meta, indent=2, sort_keys=True), encoding="utf-8")
+    raw_json_path.write_text(
+        json.dumps(repo_meta, indent=2, sort_keys=True, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     rows = []
     for url, meta in repo_meta.items():
@@ -465,11 +653,10 @@ def write_repo_metadata_outputs(
 
     df = pd.DataFrame(rows)
 
-    for col in ["languages_top", "contributors_top", "files_root_entries"]:
+    for col in ["topics", "languages_top", "contributors_top", "files_root_entries"]:
         if col in df.columns:
             df[col] = df[col].apply(
-                lambda x: json.dumps(x, ensure_ascii=False) if isinstance(
-                    x, (list, dict)) else x
+                lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, (list, dict)) else x
             )
 
     df.to_parquet(parquet_path, index=False)
@@ -485,6 +672,7 @@ def run_repo_metadata_from_projects_parquet(
     token: Optional[str] = None,
     top_contributors: int = 8,
     max_root_entries: int = 200,
+    include_readme_text: bool = True,
 ) -> Dict[str, Any]:
     """
     End to end helper:
@@ -496,15 +684,16 @@ def run_repo_metadata_from_projects_parquet(
     Returns a small summary dict.
     """
     df = pd.read_parquet(projects_parquet)
-    print("projects rows:", len(df), "cols:", list(df.columns)[:10])
+    logging.info(f"projects rows={len(df)} cols={list(df.columns)[:10]}")
     urls = extract_github_urls_from_df(df, token=token)
-    print("github urls found:", len(urls))
+    logging.info(f"github urls found={len(urls)}")
 
     repo_meta = fetch_repo_metadata(
         urls,
         token=token,
         top_contributors=top_contributors,
         max_root_entries=max_root_entries,
+        include_readme_text=include_readme_text,
     )
 
     out_paths = write_repo_metadata_outputs(
@@ -527,5 +716,10 @@ if __name__ == "__main__":
     token = os.getenv("GITHUB_TOKEN")
     print("token_present", bool(token), "token_len", len(token or ""))
     print("fetching metadata for:", urls)
-    meta = fetch_repo_metadata(urls, token=token, top_contributors=8)
-    print(json.dumps(meta, indent=2))
+    meta = fetch_repo_metadata(
+        urls,
+        token=token,
+        top_contributors=8,
+        include_readme_text=True,
+    )
+    print(json.dumps(meta, indent=2, ensure_ascii=False))
