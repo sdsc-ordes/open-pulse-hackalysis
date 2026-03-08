@@ -2,13 +2,25 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
 import pandas as pd
 import requests
-import logging
+
+from hackathon_analysis.data_extraction.models import (
+    GitHubContributor,
+    GitHubLanguageEntry,
+    GitHubRepoMetadata,
+    GitHubRepoMetadataError,
+    GitHubRootEntry,
+    GitHubRootFlags,
+    ProjectRepoMappingRow,
+)
+
 logging.basicConfig(level=logging.INFO)
 
 
@@ -246,6 +258,10 @@ def flatten_languages(repo_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return languages_top
 
 
+def _dump_model(model: Any) -> Dict[str, Any]:
+    return model.model_dump(mode="python")
+
+
 class GitHubClient:
     REST = "https://api.github.com"
     GRAPHQL = "https://api.github.com/graphql"
@@ -402,11 +418,13 @@ def fetch_repo_metadata(
             data = client.graphql(REPO_QUERY, {"owner": owner, "name": repo})
             repo_data = data.get("repository")
             if not repo_data:
-                out[url] = {
-                    "error": "repo not found or no access",
-                    "owner": owner,
-                    "repo": repo,
-                }
+                out[url] = _dump_model(
+                    GitHubRepoMetadataError(
+                        error="repo not found or no access",
+                        owner=owner,
+                        repo=repo,
+                    )
+                )
                 continue
 
             repo_name = repo_data.get("name")
@@ -485,13 +503,12 @@ def fetch_repo_metadata(
                 )
                 if isinstance(contribs, list):
                     for c in contribs[:top_contributors]:
-                        contributors.append(
-                            {
-                                "login": c.get("login") or c.get("name") or "anonymous",
-                                "contributions": c.get("contributions"),
-                                "html_url": c.get("html_url"),
-                            }
+                        contributor = GitHubContributor(
+                            login=c.get("login") or c.get("name") or "anonymous",
+                            contributions=c.get("contributions"),
+                            html_url=c.get("html_url"),
                         )
+                        contributors.append(_dump_model(contributor))
             except Exception as e:
                 logging.warning(
                     f"Could not fetch contributors for {owner}/{repo}: {e}")
@@ -508,11 +525,13 @@ def fetch_repo_metadata(
                     if isinstance(root, list):
                         for item in root[:max_root_entries]:
                             root_entries.append(
-                                {
-                                    "path": item.get("path"),
-                                    "type": item.get("type"),
-                                    "size": item.get("size"),
-                                }
+                                _dump_model(
+                                    GitHubRootEntry(
+                                        path=item.get("path"),
+                                        type=item.get("type"),
+                                        size=item.get("size"),
+                                    )
+                                )
                             )
 
                     branch = client.rest_get(
@@ -534,77 +553,76 @@ def fetch_repo_metadata(
                         f"Could not fetch file tree info for {owner}/{repo}: {e}")
 
             topics = extract_topics(repo_data)
-            languages_top = flatten_languages(repo_data)
-            root_flags = derive_root_flags(root_entries)
+            languages_top = [
+                _dump_model(GitHubLanguageEntry.model_validate(lang))
+                for lang in flatten_languages(repo_data)
+            ]
+            root_flags = _dump_model(
+                GitHubRootFlags.model_validate(derive_root_flags(root_entries))
+            )
 
             description = repo_data.get("description")
             homepage_url = repo_data.get("homepageUrl")
 
-            out[url] = {
-                "owner": owner,
-                "repo_name": repo_name,
-                "repo": repo,
-                "name_with_owner": repo_data.get("nameWithOwner"),
-                "url": repo_data.get("url"),
-
-                "description": description,
-                "homepage_url": homepage_url,
-                "topics": topics,
-
-                "is_private": repo_data.get("isPrivate"),
-                "is_archived": repo_data.get("isArchived"),
-                "is_fork": repo_data.get("isFork"),
-                "parent_repo": (repo_data.get("parent") or {}).get("nameWithOwner"),
-                "parent_url": (repo_data.get("parent") or {}).get("url"),
-                "default_branch": default_branch,
-
-                "created_at": repo_data.get("createdAt"),
-                "updated_at": repo_data.get("updatedAt"),
-                "pushed_at": repo_data.get("pushedAt"),
-
-                "stars": repo_data.get("stargazerCount"),
-                "forks": repo_data.get("forkCount"),
-                "watchers": (repo_data.get("watchers") or {}).get("totalCount"),
-
-                "primary_language": (repo_data.get("primaryLanguage") or {}).get("name"),
-                "languages_top": languages_top,
-
-                "license_spdx": (repo_data.get("licenseInfo") or {}).get("spdxId"),
-                "license_name": (repo_data.get("licenseInfo") or {}).get("name"),
-
-                "commit_count_default_branch": commit_count,
-                "first_commit_date_default_branch": first_commit_date,
-                "last_commit_date_default_branch": last_commit_date,
-                "last_commit_oid_default_branch": last_commit_oid,
-                "pull_requests_total": (repo_data.get("pullRequests") or {}).get("totalCount"),
-                "pull_requests_open": (repo_data.get("openPullRequests") or {}).get("totalCount"),
-                "pull_requests_closed": (repo_data.get("closedPullRequests") or {}).get("totalCount"),
-                "pull_requests_merged": (repo_data.get("mergedPullRequests") or {}).get("totalCount"),
-
-                "issues_total": (repo_data.get("issues") or {}).get("totalCount"),
-                "issues_open": (repo_data.get("openIssues") or {}).get("totalCount"),
-                "issues_closed": (repo_data.get("closedIssues") or {}).get("totalCount"),
-
-                "releases_count": (repo_data.get("releases") or {}).get("totalCount"),
-                "latest_release_tag": (repo_data.get("latestRelease") or {}).get("tagName"),
-                "latest_release_date": (repo_data.get("latestRelease") or {}).get("publishedAt"),
-
-                "contributors_count": contributors_count,
-                "contributors_top": contributors,
-
-                "readme_title": readme_title,
-                "readme_text": readme_text,
-                "readme_length": readme_length,
-
-                "files_root_entries": root_entries,
-                "files_total_count": files_total,
-                "dirs_total_count": dirs_total,
-
+            metadata = GitHubRepoMetadata(
+                owner=owner,
+                repo_name=repo_name,
+                repo=repo,
+                name_with_owner=repo_data.get("nameWithOwner"),
+                url=repo_data.get("url"),
+                description=description,
+                homepage_url=homepage_url,
+                topics=topics,
+                is_private=repo_data.get("isPrivate"),
+                is_archived=repo_data.get("isArchived"),
+                is_fork=repo_data.get("isFork"),
+                parent_repo=(repo_data.get("parent") or {}).get("nameWithOwner"),
+                parent_url=(repo_data.get("parent") or {}).get("url"),
+                default_branch=default_branch,
+                created_at=repo_data.get("createdAt"),
+                updated_at=repo_data.get("updatedAt"),
+                pushed_at=repo_data.get("pushedAt"),
+                stars=repo_data.get("stargazerCount"),
+                forks=repo_data.get("forkCount"),
+                watchers=(repo_data.get("watchers") or {}).get("totalCount"),
+                primary_language=(repo_data.get("primaryLanguage") or {}).get("name"),
+                languages_top=languages_top,
+                license_spdx=(repo_data.get("licenseInfo") or {}).get("spdxId"),
+                license_name=(repo_data.get("licenseInfo") or {}).get("name"),
+                commit_count_default_branch=commit_count,
+                first_commit_date_default_branch=first_commit_date,
+                last_commit_date_default_branch=last_commit_date,
+                last_commit_oid_default_branch=last_commit_oid,
+                pull_requests_total=(repo_data.get("pullRequests") or {}).get("totalCount"),
+                pull_requests_open=(repo_data.get("openPullRequests") or {}).get("totalCount"),
+                pull_requests_closed=(repo_data.get("closedPullRequests") or {}).get("totalCount"),
+                pull_requests_merged=(repo_data.get("mergedPullRequests") or {}).get("totalCount"),
+                issues_total=(repo_data.get("issues") or {}).get("totalCount"),
+                issues_open=(repo_data.get("openIssues") or {}).get("totalCount"),
+                issues_closed=(repo_data.get("closedIssues") or {}).get("totalCount"),
+                releases_count=(repo_data.get("releases") or {}).get("totalCount"),
+                latest_release_tag=(repo_data.get("latestRelease") or {}).get("tagName"),
+                latest_release_date=(repo_data.get("latestRelease") or {}).get("publishedAt"),
+                contributors_count=contributors_count,
+                contributors_top=contributors,
+                readme_title=readme_title,
+                readme_text=readme_text,
+                readme_length=readme_length,
+                files_root_entries=root_entries,
+                files_total_count=files_total,
+                dirs_total_count=dirs_total,
                 **root_flags,
-            }
+            )
+            out[url] = _dump_model(metadata)
 
         except Exception as e:
-            out[url] = {"error": str(e), "owner": owner, "repo": repo}
+            out[url] = _dump_model(
+                GitHubRepoMetadataError(
+                    error=str(e),
+                    owner=owner,
+                    repo=repo,
+                )
+            )
 
     return out
 
@@ -752,14 +770,18 @@ def build_project_repo_mapping(
         all_repo_urls.update(repo_urls_list)
 
         project_rows.append(
-            {
-                "source_row_index": int(idx) if isinstance(idx, int) else str(idx),
-                "project_uid": project_uid,
-                "project_id": project_id,
-                "project_title": project_title,
-                "github_repo_urls": repo_urls_list,
-                "github_repo_count": len(repo_urls_list),
-            }
+            _dump_model(
+                ProjectRepoMappingRow(
+                    source_row_index=(
+                        int(idx) if isinstance(idx, int) else str(idx)
+                    ),
+                    project_uid=project_uid,
+                    project_id=project_id,
+                    project_title=project_title,
+                    github_repo_urls=repo_urls_list,
+                    github_repo_count=len(repo_urls_list),
+                )
+            )
         )
 
     logging.info(f"Unique GitHub repos extracted: {len(all_repo_urls)}")

@@ -11,6 +11,11 @@ import requests
 import typer
 from bs4 import BeautifulSoup
 
+from hackathon_analysis.data_extraction.models import (
+    LauzHackMetadata,
+    LauzHackProject,
+)
+
 # Constants
 DEFAULT_LOCATION = "EPFL, Lausanne, Switzerland"
 BASE_URL = "https://lauzhack.com"
@@ -668,9 +673,14 @@ def process_project_data(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             "categories": project.get("categories", []),
         }
 
+        validated = LauzHackProject.model_validate(processed_project).model_dump(
+            mode="python",
+            exclude_none=True,
+        )
+
         # Remove empty fields
         processed_project = {
-            k: v for k, v in processed_project.items() if v or v == 0
+            k: v for k, v in validated.items() if v or v == 0
         }
 
         processed_projects.append(processed_project)
@@ -690,21 +700,14 @@ def process_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     """
     typer.echo("      → Processing metadata")
 
-    # Add timestamp
-    metadata["extracted_at"] = datetime.now().isoformat()
+    metadata_payload = dict(metadata)
+    metadata_payload["extracted_at"] = datetime.now().isoformat()
 
-    # Ensure required fields exist
-    if "name" not in metadata:
-        metadata["name"] = "LauzHack"
+    if "description" in metadata_payload:
+        metadata_payload["description"] = metadata_payload["description"][:1000]
 
-    if "location" not in metadata:
-        metadata["location"] = "EPFL, Lausanne, Switzerland"
-
-    # Clean description
-    if "description" in metadata:
-        metadata["description"] = metadata["description"][:1000]
-
-    return metadata
+    validated = LauzHackMetadata.model_validate(metadata_payload)
+    return validated.model_dump(mode="python", exclude_none=True)
 
 
 def merge_project_data(
@@ -730,7 +733,11 @@ def merge_project_data(
             "hackathon_year": metadata.get("year"),
             "hackathon_location": metadata.get("location"),
         }
-        merged_projects.append(merged_project)
+        merged_projects.append(
+            LauzHackProject.model_validate(merged_project).model_dump(
+                mode="python", exclude_none=True
+            )
+        )
 
     return merged_projects
 
