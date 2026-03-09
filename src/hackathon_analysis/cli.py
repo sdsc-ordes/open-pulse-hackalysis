@@ -25,6 +25,12 @@ def _parse_years(years: Optional[str]) -> Optional[List[int]]:
     return [int(y.strip()) for y in years.split(",") if y.strip()]
 
 
+def _get_github_token() -> Optional[str]:
+    """Load .env values for CLI execution and return GitHub token if available."""
+    load_dotenv(override=False)
+    return os.getenv("GITHUB_TOKEN")
+
+
 @app.command()
 def extract(
     output_folder: Annotated[
@@ -89,7 +95,7 @@ def github_extract( # noqa: PLR0913 because we want to keep all these parameters
 ):
     output_folder.mkdir(parents=True, exist_ok=True)
     provider = hackathon_provider.lower().strip()
-    gh_token = os.getenv("GITHUB_TOKEN")
+    gh_token = _get_github_token()
 
     if provider == "lauzhack":
         years_list = resolve_lauzhack_years(output_folder, _parse_years(years))

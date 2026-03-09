@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -269,6 +270,8 @@ class GitHubClient:
     def __init__(self, token: Optional[str] = None, timeout_s: int = 30):
         self.token = token
         self.timeout_s = timeout_s
+        self.max_retries = 4
+        self.max_rate_limit_wait_s = 120
 
     def headers(self) -> Dict[str, str]:
         h = {"Accept": "application/vnd.github+json",
@@ -277,32 +280,101 @@ class GitHubClient:
             h["Authorization"] = f"Bearer {self.token}"
         return h
 
+    @staticmethod
+    def _safe_json(response: requests.Response) -> Dict[str, Any]:
+        try:
+            payload = response.json()
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _is_rate_limit_response(response: requests.Response) -> bool:
+        if response.status_code not in {403, 429}:
+            return False
+
+        remaining = response.headers.get("X-RateLimit-Remaining")
+        if remaining == "0":
+            return True
+
+        payload = GitHubClient._safe_json(response)
+        message = str(payload.get("message", "")).lower()
+        return "rate limit" in message
+
+    def _get_rate_limit_wait_seconds(self, response: requests.Response, attempt: int) -> float:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after and retry_after.isdigit():
+            return max(1.0, float(retry_after))
+
+        reset_epoch = response.headers.get("X-RateLimit-Reset")
+        if reset_epoch and reset_epoch.isdigit():
+            return max(1.0, float(reset_epoch) - time.time() + 1.0)
+
+        # Secondary limit responses may not include reset headers.
+        return float(min(2 ** attempt, 30))
+
+    def _request_with_rate_limit_retry(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        for attempt in range(1, self.max_retries + 1):
+            response = requests.request(
+                method=method,
+                url=url,
+                headers=self.headers(),
+                timeout=self.timeout_s,
+                **kwargs,
+            )
+
+            if response.ok:
+                return response
+
+            if self._is_rate_limit_response(response):
+                wait_s = self._get_rate_limit_wait_seconds(response, attempt)
+                if wait_s > self.max_rate_limit_wait_s:
+                    payload = self._safe_json(response)
+                    message = payload.get("message") or response.text or "GitHub rate limit exceeded"
+                    raise RuntimeError(
+                        f"{message}. Retry in about {int(wait_s)} seconds or provide GITHUB_TOKEN."
+                    )
+
+                if attempt == self.max_retries:
+                    response.raise_for_status()
+
+                logging.warning(
+                    "GitHub API rate limit hit for %s. Waiting %.1fs before retry (%d/%d).",
+                    url,
+                    wait_s,
+                    attempt,
+                    self.max_retries,
+                )
+                time.sleep(wait_s)
+                continue
+
+            response.raise_for_status()
+
+        raise RuntimeError(f"Failed request after retries: {method} {url}")
+
     def rest_get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
-        r = requests.get(
+        r = self._request_with_rate_limit_retry(
+            "GET",
             f"{self.REST}{path}",
             params=params or {},
-            headers=self.headers(),
-            timeout=self.timeout_s,
         )
         r.raise_for_status()
         return r.json()
 
     def rest_get_with_headers(self, path: str, params: Optional[Dict[str, Any]] = None) -> Tuple[Any, Dict[str, str]]:
-        r = requests.get(
+        r = self._request_with_rate_limit_retry(
+            "GET",
             f"{self.REST}{path}",
             params=params or {},
-            headers=self.headers(),
-            timeout=self.timeout_s,
         )
         r.raise_for_status()
         return r.json(), dict(r.headers)
 
     def graphql(self, query: str, variables: Dict[str, Any]) -> Dict[str, Any]:
-        r = requests.post(
+        r = self._request_with_rate_limit_retry(
+            "POST",
             self.GRAPHQL,
             json={"query": query, "variables": variables},
-            headers=self.headers(),
-            timeout=self.timeout_s,
         )
         r.raise_for_status()
         payload = r.json()
@@ -408,10 +480,16 @@ def fetch_repo_metadata(
     client = GitHubClient(token=token)
     out: Dict[str, Dict[str, Any]] = {}
 
+    if not token:
+        logging.warning(
+            "GITHUB_TOKEN is not set. Unauthenticated GitHub API limits are low; "
+            "metadata extraction may stop early due to rate limiting."
+        )
+
     logging.info(
         f"Fetching metadata for {len(repo_urls)} repositories from GitHub")
 
-    for url in repo_urls:
+    for i, url in enumerate(repo_urls):
         owner, repo = parse_github_repo_url(url)
 
         try:
@@ -616,13 +694,32 @@ def fetch_repo_metadata(
             out[url] = _dump_model(metadata)
 
         except Exception as e:
+            err_msg = str(e)
             out[url] = _dump_model(
                 GitHubRepoMetadataError(
-                    error=str(e),
+                    error=err_msg,
                     owner=owner,
                     repo=repo,
                 )
             )
+            if "rate limit" in err_msg.lower():
+                remaining = repo_urls[i + 1:]
+                if remaining:
+                    stop_msg = (
+                        f"{err_msg} Extraction stopped early to avoid repeated "
+                        "GitHub API rate-limit failures."
+                    )
+                    logging.warning(stop_msg)
+                    for pending_url in remaining:
+                        pending_owner, pending_repo = parse_github_repo_url(pending_url)
+                        out[pending_url] = _dump_model(
+                            GitHubRepoMetadataError(
+                                error=stop_msg,
+                                owner=pending_owner,
+                                repo=pending_repo,
+                            )
+                        )
+                break
 
     return out
 
@@ -966,7 +1063,7 @@ def run_repo_metadata_from_projects_parquet(
     token: Optional[str] = None,
     top_contributors: int = 8,
     max_root_entries: int = 200,
-    include_readme_text: bool = False,
+    include_readme_text: bool = True,
     fetch_readme: bool = True,
     readme_size_limit_bytes: Optional[int] = None,
     readme_text_max_bytes: int = 100_000,
