@@ -1,5 +1,7 @@
 """Tests for the Hackalysis command line interface."""
 
+import os
+
 from hackathon_analysis import cli
 from typer.testing import CliRunner
 
@@ -44,3 +46,16 @@ def test_extract_invalid_provider():
                                       if hasattr(result, 'stderr') else "")
     EXPECTED_EXIT_CODE = 2
     assert "unknown" in output or "error" in output or result.exit_code == EXPECTED_EXIT_CODE
+
+
+def test_get_github_token_loads_dotenv(monkeypatch):
+    """Check that token lookup loads dotenv values."""
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    def _fake_load_dotenv(override=False):
+        assert override is False
+        os.environ["GITHUB_TOKEN"] = "token-from-dotenv"
+        return True
+
+    monkeypatch.setattr(cli, "load_dotenv", _fake_load_dotenv)
+    assert cli._get_github_token() == "token-from-dotenv"
