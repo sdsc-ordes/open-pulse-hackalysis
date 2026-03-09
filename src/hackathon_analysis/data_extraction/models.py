@@ -150,6 +150,8 @@ class LauzHackMetadata(BaseModel):
     name: str = "LauzHack"
     description: Optional[str] = None
     date: Optional[str] = None
+    date_start: Optional[str] = None
+    date_end: Optional[str] = None
     location: str = "EPFL, Lausanne, Switzerland"
     sponsors: Optional[List[str]] = None
     prizes: Optional[List[str]] = None

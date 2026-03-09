@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +20,20 @@ from hackathon_analysis.data_extraction.models import (
 DEFAULT_LOCATION = "EPFL, Lausanne, Switzerland"
 BASE_URL = "https://lauzhack.com"
 MIN_CONTENT_DIV_LENGTH = 20  # Minimum characters for content div to be considered
+MONTH_NAME_TO_NUM = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
 
 
 def _normalize_title(title: Optional[str]) -> str:
@@ -546,6 +560,47 @@ def _extract_social_links(soup: BeautifulSoup) -> Dict[str, str]:
     return social_links
 
 
+def _extract_event_date_text(soup: BeautifulSoup) -> Optional[str]:
+    """Extract a human-readable event date range from the page text."""
+    txt = soup.get_text(" ", strip=True)
+    pattern = re.compile(
+        r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}\s*(?:-|–)\s*(?:(January|February|March|April|May|June|July|August|September|October|November|December)\s+)?\d{1,2}",
+        re.IGNORECASE,
+    )
+    match = pattern.search(txt)
+    return match.group(0).strip() if match else None
+
+
+def _parse_event_date_range(event_date_text: str, default_year: int) -> Optional[tuple[date, date]]:
+    """Parse ranges like 'November 30 - December 1' or 'December 2-3'."""
+    pattern = re.compile(
+        r"^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})\s*(?:-|–)\s*(?:(January|February|March|April|May|June|July|August|September|October|November|December)\s+)?(\d{1,2})$",
+        re.IGNORECASE,
+    )
+    match = pattern.match(event_date_text.strip())
+    if not match:
+        return None
+
+    start_month_name, start_day_s, end_month_name, end_day_s = match.groups()
+    start_month = MONTH_NAME_TO_NUM[start_month_name.lower()]
+    end_month = MONTH_NAME_TO_NUM[end_month_name.lower()] if end_month_name else start_month
+    start_day = int(start_day_s)
+    end_day = int(end_day_s)
+
+    start_year = default_year
+    end_year = default_year
+    if end_month < start_month:
+        end_year = default_year + 1
+
+    try:
+        start_date = date(start_year, start_month, start_day)
+        end_date = date(end_year, end_month, end_day)
+    except ValueError:
+        return None
+
+    return (start_date, end_date)
+
+
 def fetch_metadata(metadata_url: str) -> Dict[str, Any]:
     """
     Fetch hackathon metadata from LauzHack main page.
@@ -579,6 +634,10 @@ def fetch_metadata(metadata_url: str) -> Dict[str, Any]:
     # Set hackathon name
     metadata["name"] = f"LauzHack {metadata.get('year', '')}"
 
+    event_date_text = _extract_event_date_text(soup)
+    if event_date_text:
+        metadata["date"] = event_date_text
+
     # Extract description
     desc_elem = (
         soup.find("meta", attrs={"name": "description"})
@@ -595,6 +654,14 @@ def fetch_metadata(metadata_url: str) -> Dict[str, Any]:
     date_elem = soup.find(class_="date") or soup.find(class_="event-date")
     if date_elem:
         metadata["date"] = date_elem.get_text(strip=True)
+
+    year_val = metadata.get("year")
+    if isinstance(year_val, int):
+        date_range = _parse_event_date_range(metadata.get("date", ""), year_val)
+        if date_range:
+            start_date, end_date = date_range
+            metadata["date_start"] = start_date.isoformat()
+            metadata["date_end"] = end_date.isoformat()
 
     # Extract location
     location_elem = soup.find(class_="location") or soup.find(
