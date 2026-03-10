@@ -1,7 +1,6 @@
-import pytest
 import re
 
-from open_pulse import __version__
+from hackathon_analysis import __version__
 
 
 def test_version_format():

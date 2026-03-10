@@ -19,8 +19,11 @@
 
 # General output folder.
 .output
+data/*
 # Virtual environment.
 .venv
+# Environment variables
+.env*
 # Ruff cache folder.
 .ruff_cache
 # Python Cache
