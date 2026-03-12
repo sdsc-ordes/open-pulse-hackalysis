@@ -104,14 +104,14 @@ class GitHubRootEntry(BaseModel):
 class GitHubRootFlags(BaseModel):
     """Derived boolean flags from root entries."""
 
-    has_tests: bool
-    has_docs: bool
-    has_ci: bool
-    has_docker: bool
-    has_notebooks: bool
-    has_contributing: bool
-    has_license_file: bool
-    has_readme_file: bool
+    has_tests: bool = False
+    has_docs: bool = False
+    has_ci: bool = False
+    has_docker: bool = False
+    has_notebooks: bool = False
+    has_contributing: bool = False
+    has_license_file: bool = False
+    has_readme_file: bool = False
 
 
 class GitHubRepoMetadata(BaseModel):
@@ -125,34 +125,34 @@ class GitHubRepoMetadata(BaseModel):
     description: Optional[str] = None
     homepage_url: Optional[AnyHttpUrl] = None
     topics: List[str] = Field(default_factory=list)
-    is_private: Optional[bool] = None
-    is_archived: Optional[bool] = None
-    is_fork: Optional[bool] = None
+    is_private: Optional[bool] = False
+    is_archived: Optional[bool] = False
+    is_fork: Optional[bool] = False
     parent_repo: Optional[str] = None
     parent_url: Optional[AnyHttpUrl] = None
     default_branch: Optional[str] = None
     created_at: Optional[dt_datetime] = None
     updated_at: Optional[dt_datetime] = None
     pushed_at: Optional[dt_datetime] = None
-    stars: Optional[NonNegativeInt] = None
-    forks: Optional[NonNegativeInt] = None
-    watchers: Optional[NonNegativeInt] = None
+    stars: Optional[NonNegativeInt] = 0
+    forks: Optional[NonNegativeInt] = 0
+    watchers: Optional[NonNegativeInt] = 0
     primary_language: Optional[str] = None
     languages_top: List[GitHubLanguageEntry] = Field(default_factory=list)
     license_spdx: Optional[str] = None
-    license_name: Optional[str] = None
-    commit_count_default_branch: Optional[NonNegativeInt] = None
+    license_name: Optional[str] = "Unknown"
+    commit_count_default_branch: Optional[NonNegativeInt] = 0
     first_commit_date_default_branch: Optional[dt_datetime] = None
     last_commit_date_default_branch: Optional[dt_datetime] = None
     last_commit_oid_default_branch: Optional[str] = None
-    pull_requests_total: Optional[NonNegativeInt] = None
-    pull_requests_open: Optional[NonNegativeInt] = None
-    pull_requests_closed: Optional[NonNegativeInt] = None
-    pull_requests_merged: Optional[NonNegativeInt] = None
-    issues_total: Optional[NonNegativeInt] = None
-    issues_open: Optional[NonNegativeInt] = None
-    issues_closed: Optional[NonNegativeInt] = None
-    releases_count: Optional[NonNegativeInt] = None
+    pull_requests_total: Optional[NonNegativeInt] = 0
+    pull_requests_open: Optional[NonNegativeInt] = 0
+    pull_requests_closed: Optional[NonNegativeInt] = 0
+    pull_requests_merged: Optional[NonNegativeInt] = 0
+    issues_total: Optional[NonNegativeInt] = 0
+    issues_open: Optional[NonNegativeInt] = 0
+    issues_closed: Optional[NonNegativeInt] = 0
+    releases_count: Optional[NonNegativeInt] = 0
     latest_release_tag: Optional[str] = None
     latest_release_date: Optional[dt_datetime] = None
     contributors_count: Optional[NonNegativeInt] = None
@@ -164,14 +164,14 @@ class GitHubRepoMetadata(BaseModel):
     files_total_count: Optional[NonNegativeInt] = None
     dirs_total_count: Optional[NonNegativeInt] = None
     project_foreign_keys: List[str] = Field(default_factory=list)
-    has_tests: bool = false
-    has_docs: bool = false
-    has_ci: bool = false
-    has_docker: bool = false
-    has_notebooks: bool = false
-    has_contributing: bool = false
-    has_license_file: bool = false
-    has_readme_file: bool = false
+    has_tests: bool = False
+    has_docs: bool = False
+    has_ci: bool = False
+    has_docker: bool = False
+    has_notebooks: bool = False
+    has_contributing: bool = False
+    has_license_file: bool = False
+    has_readme_file: bool = False
 
     @field_validator(
         "owner",
