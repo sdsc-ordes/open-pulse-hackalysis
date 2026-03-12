@@ -6,7 +6,14 @@ from datetime import date as dt_date
 from datetime import datetime as dt_datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, field_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    NonNegativeInt,
+    field_validator,
+)
 
 
 def _strip_or_none(value: Any) -> Any:
@@ -56,7 +63,7 @@ class GitHubContributor(BaseModel):
 
     login: str
     contributions: Optional[NonNegativeInt] = None
-    html_url: Optional[str] = None
+    html_url: Optional[AnyHttpUrl] = None
 
     @field_validator("login", mode="before")
     @classmethod
@@ -114,15 +121,15 @@ class GitHubRepoMetadata(BaseModel):
     repo_name: Optional[str] = None
     repo: str
     name_with_owner: Optional[str] = None
-    url: Optional[str] = None
+    url: Optional[AnyHttpUrl] = None
     description: Optional[str] = None
-    homepage_url: Optional[str] = None
+    homepage_url: Optional[AnyHttpUrl] = None
     topics: List[str] = Field(default_factory=list)
     is_private: Optional[bool] = None
     is_archived: Optional[bool] = None
     is_fork: Optional[bool] = None
     parent_repo: Optional[str] = None
-    parent_url: Optional[str] = None
+    parent_url: Optional[AnyHttpUrl] = None
     default_branch: Optional[str] = None
     created_at: Optional[dt_datetime] = None
     updated_at: Optional[dt_datetime] = None
@@ -285,7 +292,7 @@ class LauzHackMetadata(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    source_url: Optional[str] = None
+    source_url: Optional[AnyHttpUrl] = None
     year: Optional[NonNegativeInt] = None
     name: str = "LauzHack"
     description: Optional[str] = None
@@ -295,7 +302,7 @@ class LauzHackMetadata(BaseModel):
     location: str = "EPFL, Lausanne, Switzerland"
     sponsors: Optional[List[str]] = None
     prizes: Optional[List[str]] = None
-    social_links: Optional[Dict[str, str]] = None
+    social_links: Optional[Dict[str, AnyHttpUrl]] = None
     extracted_at: Optional[dt_datetime] = None
 
     @field_validator("source_url", "name", "description", "date", "location", mode="before")
