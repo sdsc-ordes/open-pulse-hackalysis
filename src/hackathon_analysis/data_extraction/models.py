@@ -158,20 +158,20 @@ class GitHubRepoMetadata(BaseModel):
     contributors_count: Optional[NonNegativeInt] = None
     contributors_top: List[GitHubContributor] = Field(default_factory=list)
     readme_title: Optional[str] = None
-    readme_text: Optional[str] = None
-    readme_length: Optional[NonNegativeInt] = None
+    readme_text: Optional[str] = ""
+    readme_length: Optional[NonNegativeInt] = 0
     files_root_entries: List[GitHubRootEntry] = Field(default_factory=list)
     files_total_count: Optional[NonNegativeInt] = None
     dirs_total_count: Optional[NonNegativeInt] = None
     project_foreign_keys: List[str] = Field(default_factory=list)
-    has_tests: bool
-    has_docs: bool
-    has_ci: bool
-    has_docker: bool
-    has_notebooks: bool
-    has_contributing: bool
-    has_license_file: bool
-    has_readme_file: bool
+    has_tests: bool = false
+    has_docs: bool = false
+    has_ci: bool = false
+    has_docker: bool = false
+    has_notebooks: bool = false
+    has_contributing: bool = false
+    has_license_file: bool = false
+    has_readme_file: bool = false
 
     @field_validator(
         "owner",
