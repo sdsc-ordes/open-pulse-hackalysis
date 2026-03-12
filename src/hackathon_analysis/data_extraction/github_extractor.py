@@ -1119,7 +1119,7 @@ def run_repo_metadata_from_projects_parquet(
 
     for repo_url, fks in repo_fk_map.items():
         meta = repo_meta.get(repo_url)
-        if isinstance(meta, dict) and "error" not in meta:
+        if isinstance(meta, dict):
             meta["project_foreign_keys"] = sorted(fks)
 
     out_paths: Dict[str, Path] = {}

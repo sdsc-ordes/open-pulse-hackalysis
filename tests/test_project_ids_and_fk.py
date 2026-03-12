@@ -78,3 +78,38 @@ def test_github_repo_metadata_includes_project_foreign_keys(tmp_path: Path):
 
     assert repo_one["project_foreign_keys"] == ["lhp_aaa111", "lhp_bbb222"]
     assert repo_two["project_foreign_keys"] == ["lhp_ccc333"]
+
+
+def test_github_repo_metadata_includes_foreign_keys_on_error_rows(tmp_path: Path):
+    projects_df = pd.DataFrame(
+        [
+            {
+                "id": 1,
+                "title": "P1",
+                "project_hard_id": "lhp_err111",
+                "url": "https://github.com/org/repo-error",
+            }
+        ]
+    )
+    projects_parquet = tmp_path / "projects.parquet"
+    projects_df.to_parquet(projects_parquet, index=False)
+
+    def _fake_fetch_repo_metadata(urls, **kwargs):  # noqa: ANN001
+        return {u: {"error": "boom", "owner": "org", "repo": "repo-error"} for u in urls}
+
+    with patch(
+        "hackathon_analysis.data_extraction.github_extractor.fetch_repo_metadata",
+        side_effect=_fake_fetch_repo_metadata,
+    ):
+        summary = run_repo_metadata_from_projects_parquet(
+            projects_parquet=projects_parquet,
+            hackathon_folder=tmp_path,
+            provider_prefix="lauzhack",
+            write_project_level_output=False,
+        )
+
+    repo_json = Path(summary["outputs"]["json"])
+    data = json.loads(repo_json.read_text(encoding="utf-8"))
+    err_repo = data["https://github.com/org/repo-error"]
+    assert err_repo["error"] == "boom"
+    assert err_repo["project_foreign_keys"] == ["lhp_err111"]
