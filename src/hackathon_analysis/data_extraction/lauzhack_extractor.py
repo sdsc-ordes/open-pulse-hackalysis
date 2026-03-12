@@ -1,5 +1,6 @@
 """LauzHack data extraction helper functions."""
 
+import hashlib
 import json
 import re
 from datetime import date, datetime
@@ -105,6 +106,19 @@ def _build_dedup_key(
             team_key,
         ]
     )
+
+
+def _build_project_hard_id(project: Dict[str, Any], fallback_idx: Optional[int] = None) -> str:
+    """Build deterministic project id from extracted content."""
+    title = str(project.get("title", "") or "")
+    description = str(project.get("description", "") or "")
+    url = str(project.get("url", "") or "")
+    team = project.get("team", []) or []
+    dedupe_key = _build_dedup_key(title, description, url, team)
+    if fallback_idx is not None:
+        dedupe_key = f"{dedupe_key}|idx:{fallback_idx}"
+    digest = hashlib.sha1(dedupe_key.encode("utf-8")).hexdigest()[:16]  # noqa: S324
+    return f"lhp_{digest}"
 
 
 def _parse_projects_from_elements(
@@ -526,7 +540,10 @@ def extract_project_info(
         if img_elem and img_elem.get("src"):
             project["image_url"] = img_elem["src"]
 
-    return project if "title" in project else None
+    if "title" in project:
+        project["project_hard_id"] = _build_project_hard_id(project, fallback_idx=idx)
+        return project
+    return None
 
 
 def _extract_social_links(soup: BeautifulSoup) -> Dict[str, str]:
@@ -729,6 +746,8 @@ def process_project_data(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         # Clean and validate data
         processed_project = {
             "id": project.get("id"),
+            "project_hard_id": project.get("project_hard_id")
+            or _build_project_hard_id(project),
             "title": title or "Untitled Project",
             # Limit length
             "description": project.get("description", "")[:500],

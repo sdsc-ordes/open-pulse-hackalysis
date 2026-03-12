@@ -862,6 +862,17 @@ def build_project_repo_mapping(
         if project_uid in seen_uids:
             project_uid = f"{base_uid}|row:{idx}"
         seen_uids.add(project_uid)
+        project_fk = None
+        for fk_col in ("project_hard_id", "project_uid"):
+            if fk_col in df.columns:
+                fk_val = row.get(fk_col)
+                if not pd.isna(fk_val):
+                    fk_text = str(fk_val).strip()
+                    if fk_text:
+                        project_fk = fk_text
+                        break
+        if not project_fk:
+            project_fk = project_uid
 
         repo_urls_list = sorted(repo_urls)
         all_repo_urls.update(repo_urls_list)
@@ -872,6 +883,7 @@ def build_project_repo_mapping(
                     source_row_index=(
                         int(idx) if isinstance(idx, int) else str(idx)
                     ),
+                    project_fk=project_fk,
                     project_uid=project_uid,
                     project_id=project_id,
                     project_title=project_title,
@@ -968,6 +980,7 @@ def write_project_metadata_outputs(
         merged_rows.append(
             {
                 **base,
+                "project_fk": proj.get("project_fk"),
                 "project_uid": proj.get("project_uid"),
                 "project_id": proj.get("project_id"),
                 "project_title": proj.get("project_title"),
@@ -1042,7 +1055,7 @@ def write_repo_metadata_outputs(
 
     df = pd.DataFrame(rows)
 
-    for col in ["topics", "languages_top", "contributors_top", "files_root_entries"]:
+    for col in ["topics", "languages_top", "contributors_top", "files_root_entries", "project_foreign_keys"]:
         if col in df.columns:
             df[col] = df[col].apply(
                 lambda x: json.dumps(x, ensure_ascii=False)
@@ -1095,6 +1108,19 @@ def run_repo_metadata_from_projects_parquet(
         readme_size_limit_bytes=readme_size_limit_bytes,
         readme_text_max_bytes=readme_text_max_bytes,
     )
+
+    repo_fk_map: Dict[str, set[str]] = {}
+    for proj in project_rows:
+        fk = proj.get("project_fk")
+        if not fk:
+            continue
+        for repo_url in proj.get("github_repo_urls", []):
+            repo_fk_map.setdefault(repo_url, set()).add(str(fk))
+
+    for repo_url, fks in repo_fk_map.items():
+        meta = repo_meta.get(repo_url)
+        if isinstance(meta, dict) and "error" not in meta:
+            meta["project_foreign_keys"] = sorted(fks)
 
     out_paths: Dict[str, Path] = {}
     if write_repo_level_output:

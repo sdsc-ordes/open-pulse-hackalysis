@@ -156,6 +156,7 @@ class GitHubRepoMetadata(BaseModel):
     files_root_entries: List[GitHubRootEntry] = Field(default_factory=list)
     files_total_count: Optional[NonNegativeInt] = None
     dirs_total_count: Optional[NonNegativeInt] = None
+    project_foreign_keys: List[str] = Field(default_factory=list)
     has_tests: bool
     has_docs: bool
     has_ci: bool
@@ -220,13 +221,14 @@ class ProjectRepoMappingRow(BaseModel):
     """Project row to GitHub repo URL mapping."""
 
     source_row_index: int | str
+    project_fk: str
     project_uid: str
     project_id: Optional[str] = None
     project_title: Optional[str] = None
     github_repo_urls: List[str] = Field(default_factory=list)
     github_repo_count: NonNegativeInt
 
-    @field_validator("project_uid", "project_id", "project_title", mode="before")
+    @field_validator("project_fk", "project_uid", "project_id", "project_title", mode="before")
     @classmethod
     def _normalize_project_text(cls, value: Any) -> Any:
         return _strip_or_none(value)
@@ -243,6 +245,7 @@ class LauzHackProject(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     id: Optional[NonNegativeInt | str] = None
+    project_hard_id: str
     title: str
     description: str = ""
     url: str = ""
@@ -257,6 +260,7 @@ class LauzHackProject(BaseModel):
 
     @field_validator(
         "title",
+        "project_hard_id",
         "description",
         "url",
         "image_url",
