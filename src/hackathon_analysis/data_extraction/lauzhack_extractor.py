@@ -741,7 +741,7 @@ def process_project_data(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         }
 
         validated = LauzHackProject.model_validate(processed_project).model_dump(
-            mode="python",
+            mode="json",
             exclude_none=True,
         )
 
@@ -774,7 +774,7 @@ def process_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
         metadata_payload["description"] = metadata_payload["description"][:1000]
 
     validated = LauzHackMetadata.model_validate(metadata_payload)
-    return validated.model_dump(mode="python", exclude_none=True)
+    return validated.model_dump(mode="json", exclude_none=True)
 
 
 def merge_project_data(
@@ -802,7 +802,7 @@ def merge_project_data(
         }
         merged_projects.append(
             LauzHackProject.model_validate(merged_project).model_dump(
-                mode="python", exclude_none=True
+                mode="json", exclude_none=True
             )
         )
 

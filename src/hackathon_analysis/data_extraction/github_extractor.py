@@ -260,7 +260,7 @@ def flatten_languages(repo_data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _dump_model(model: Any) -> Dict[str, Any]:
-    return model.model_dump(mode="python")
+    return model.model_dump(mode="json")
 
 
 class GitHubClient:
