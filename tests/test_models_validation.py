@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from hackathon_analysis.data_extraction.models import (
+    GitHubProjectMetadataRow,
     GitHubRepoMetadata,
     LauzHackMetadata,
 )
@@ -96,3 +97,20 @@ def test_models_validate_http_urls():
             has_readme_file=True,
             url="not-a-url",
         )
+
+
+def test_github_project_metadata_row_normalizes_lists_and_nulls():
+    model = GitHubProjectMetadataRow(
+        project_fk=None,
+        project_uid=None,
+        github_repo_urls="https://github.com/octocat/hello-world",
+        github_repo_count="1",
+        team=None,
+    )
+
+    dumped = model.model_dump(mode="json")
+    assert dumped["project_fk"] is None
+    assert dumped["project_uid"] is None
+    assert dumped["github_repo_urls"] == ["https://github.com/octocat/hello-world"]
+    assert dumped["github_repo_count"] == 1
+    assert dumped["team"] == []

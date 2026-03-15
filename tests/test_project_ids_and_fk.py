@@ -30,7 +30,7 @@ def test_process_project_data_assigns_deterministic_project_hard_id():
     assert first[0]["project_hard_id"] == second[0]["project_hard_id"]
 
 
-def test_github_repo_metadata_includes_project_foreign_keys(tmp_path: Path):
+def test_github_repo_metadata_includes_project_foreign_key(tmp_path: Path):
     projects_df = pd.DataFrame(
         [
             {
@@ -42,12 +42,6 @@ def test_github_repo_metadata_includes_project_foreign_keys(tmp_path: Path):
             {
                 "id": 2,
                 "title": "P2",
-                "project_hard_id": "lhp_bbb222",
-                "url": "https://github.com/org/repo-one",
-            },
-            {
-                "id": 3,
-                "title": "P3",
                 "project_hard_id": "lhp_ccc333",
                 "url": "https://github.com/org/repo-two",
             },
@@ -76,11 +70,11 @@ def test_github_repo_metadata_includes_project_foreign_keys(tmp_path: Path):
     repo_one = data["https://github.com/org/repo-one"]
     repo_two = data["https://github.com/org/repo-two"]
 
-    assert repo_one["project_foreign_keys"] == ["lhp_aaa111", "lhp_bbb222"]
-    assert repo_two["project_foreign_keys"] == ["lhp_ccc333"]
+    assert repo_one["project_foreign_key"] == "lhp_aaa111"
+    assert repo_two["project_foreign_key"] == "lhp_ccc333"
 
 
-def test_github_repo_metadata_includes_foreign_keys_on_error_rows(tmp_path: Path):
+def test_github_repo_metadata_includes_foreign_key_on_error_rows(tmp_path: Path):
     projects_df = pd.DataFrame(
         [
             {
@@ -112,4 +106,44 @@ def test_github_repo_metadata_includes_foreign_keys_on_error_rows(tmp_path: Path
     data = json.loads(repo_json.read_text(encoding="utf-8"))
     err_repo = data["https://github.com/org/repo-error"]
     assert err_repo["error"] == "boom"
-    assert err_repo["project_foreign_keys"] == ["lhp_err111"]
+    assert err_repo["project_foreign_key"] == "lhp_err111"
+
+
+def test_github_repo_metadata_raises_if_repo_is_linked_to_multiple_projects(tmp_path: Path):
+    projects_df = pd.DataFrame(
+        [
+            {
+                "id": 1,
+                "title": "P1",
+                "project_hard_id": "lhp_aaa111",
+                "url": "https://github.com/org/repo-one",
+            },
+            {
+                "id": 2,
+                "title": "P2",
+                "project_hard_id": "lhp_bbb222",
+                "url": "https://github.com/org/repo-one",
+            },
+        ]
+    )
+    projects_parquet = tmp_path / "projects.parquet"
+    projects_df.to_parquet(projects_parquet, index=False)
+
+    def _fake_fetch_repo_metadata(urls, **kwargs):  # noqa: ANN001
+        return {u: {"owner": "org", "repo": u.rsplit("/", 1)[-1]} for u in urls}
+
+    with patch(
+        "hackathon_analysis.data_extraction.github_extractor.fetch_repo_metadata",
+        side_effect=_fake_fetch_repo_metadata,
+    ):
+        try:
+            run_repo_metadata_from_projects_parquet(
+                projects_parquet=projects_parquet,
+                hackathon_folder=tmp_path,
+                provider_prefix="lauzhack",
+                write_project_level_output=False,
+            )
+        except ValueError as exc:
+            assert "linked to multiple projects" in str(exc)
+        else:
+            raise AssertionError("Expected ValueError for duplicate repo-to-project mapping")

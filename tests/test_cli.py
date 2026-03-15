@@ -82,13 +82,19 @@ def test_github_extract_account_invokes_runner(monkeypatch, tmp_path):
         out_dir.mkdir(parents=True, exist_ok=True)
         json_path = out_dir / "github_account_github_repo_metadata.json"
         parquet_path = out_dir / "github_account_github_repo_metadata.parquet"
+        project_json_path = out_dir / "github_account_github_project_metadata.json"
+        project_parquet_path = out_dir / "github_account_github_project_metadata.parquet"
         json_path.write_text("{}", encoding="utf-8")
         parquet_path.write_text("", encoding="utf-8")
+        project_json_path.write_text("[]", encoding="utf-8")
+        project_parquet_path.write_text("", encoding="utf-8")
         return {
             "repos_found": 2,
             "outputs": {
                 "json": str(json_path),
                 "parquet": str(parquet_path),
+                "project_json": str(project_json_path),
+                "project_parquet": str(project_parquet_path),
             },
         }
 

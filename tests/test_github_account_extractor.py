@@ -78,8 +78,18 @@ def test_run_repo_metadata_from_account_writes_outputs(tmp_path: Path, monkeypat
     assert summary["repos_found"] == 1
     repo_json = Path(summary["outputs"]["json"])
     repo_parquet = Path(summary["outputs"]["parquet"])
+    project_json = Path(summary["outputs"]["project_json"])
+    project_parquet = Path(summary["outputs"]["project_parquet"])
     assert repo_json.exists()
     assert repo_parquet.exists()
+    assert project_json.exists()
+    assert project_parquet.exists()
 
     payload = json.loads(repo_json.read_text(encoding="utf-8"))
     assert payload["https://github.com/openai/repo-one"]["repo"] == "repo-one"
+    assert payload["https://github.com/openai/repo-one"]["project_foreign_key"] is None
+
+    project_payload = json.loads(project_json.read_text(encoding="utf-8"))
+    assert project_payload[0]["project_fk"] is None
+    assert project_payload[0]["project_uid"] is None
+    assert project_payload[0]["github_repo_urls"] == ["https://github.com/openai/repo-one"]
