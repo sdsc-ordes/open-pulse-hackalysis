@@ -163,7 +163,7 @@ class GitHubRepoMetadata(BaseModel):
     files_root_entries: List[GitHubRootEntry] = Field(default_factory=list)
     files_total_count: Optional[NonNegativeInt] = None
     dirs_total_count: Optional[NonNegativeInt] = None
-    project_foreign_keys: List[str] = Field(default_factory=list)
+    project_foreign_key: Optional[str] = None
     has_tests: bool = False
     has_docs: bool = False
     has_ci: bool = False
@@ -191,6 +191,7 @@ class GitHubRepoMetadata(BaseModel):
         "latest_release_tag",
         "readme_title",
         "readme_text",
+        "project_foreign_key",
         mode="before",
     )
     @classmethod
@@ -243,6 +244,54 @@ class ProjectRepoMappingRow(BaseModel):
     @field_validator("github_repo_urls", mode="before")
     @classmethod
     def _normalize_repo_urls(cls, value: Any) -> Any:
+        return _string_list(value)
+
+
+class GitHubProjectMetadataRow(BaseModel):
+    """Project-shaped GitHub metadata output row."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: Optional[NonNegativeInt | str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    url: Optional[str] = None
+    team: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=list)
+    image_url: Optional[str] = ""
+    awards: List[str] = Field(default_factory=list)
+    categories: List[str] = Field(default_factory=list)
+    hackathon_name: Optional[str] = None
+    hackathon_year: Optional[NonNegativeInt | str] = None
+    hackathon_location: Optional[str] = None
+    project_fk: Optional[str] = None
+    project_uid: Optional[str] = None
+    project_id: Optional[str] = None
+    project_title: Optional[str] = None
+    github_repo_urls: List[str] = Field(default_factory=list)
+    github_repo_count: NonNegativeInt = 0
+    github_repos_metadata: List[Dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator(
+        "title",
+        "description",
+        "url",
+        "image_url",
+        "hackathon_name",
+        "hackathon_location",
+        "project_fk",
+        "project_uid",
+        "project_id",
+        "project_title",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_text_like(cls, value: Any) -> Any:
+        return _strip_or_none(value)
+
+    @field_validator("team", "tags", "awards", "categories", "github_repo_urls", mode="before")
+    @classmethod
+    def _normalize_list_like(cls, value: Any) -> Any:
         return _string_list(value)
 
 

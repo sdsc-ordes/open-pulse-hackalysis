@@ -15,6 +15,7 @@ import requests
 from hackathon_analysis.data_extraction.models import (
     GitHubContributor,
     GitHubLanguageEntry,
+    GitHubProjectMetadataRow,
     GitHubRepoMetadata,
     GitHubRepoMetadataError,
     GitHubRootEntry,
@@ -322,6 +323,26 @@ def flatten_languages(repo_data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _dump_model(model: Any) -> Dict[str, Any]:
     return model.model_dump(mode="json")
+
+
+def _deep_to_python(v: Any) -> Any:
+    if v is None:
+        return None
+    if isinstance(v, dict):
+        return {str(k): _deep_to_python(val) for k, val in v.items()}
+    if isinstance(v, (list, tuple, set)):
+        return [_deep_to_python(val) for val in v]
+    if hasattr(v, "tolist") and not isinstance(v, (str, bytes, bytearray)):
+        return _deep_to_python(v.tolist())
+    if hasattr(v, "item") and not isinstance(v, (str, bytes, bytearray)):
+        item_v = v.item()
+        if item_v is not v:
+            return _deep_to_python(item_v)
+    return v
+
+
+def _project_metadata_row_to_dict(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return _dump_model(GitHubProjectMetadataRow.model_validate(_deep_to_python(payload)))
 
 
 class GitHubClient:
@@ -1051,22 +1072,7 @@ def write_project_metadata_outputs(
             }
         )
 
-    def _deep_to_python(v: Any) -> Any:
-        if v is None:
-            return None
-        if isinstance(v, dict):
-            return {str(k): _deep_to_python(val) for k, val in v.items()}
-        if isinstance(v, (list, tuple, set)):
-            return [_deep_to_python(val) for val in v]
-        if hasattr(v, "tolist") and not isinstance(v, (str, bytes, bytearray)):
-            return _deep_to_python(v.tolist())
-        if hasattr(v, "item") and not isinstance(v, (str, bytes, bytearray)):
-            item_v = v.item()
-            if item_v is not v:
-                return _deep_to_python(item_v)
-        return v
-
-    merged_rows = _deep_to_python(merged_rows)
+    merged_rows = [_project_metadata_row_to_dict(row) for row in merged_rows]
 
     project_json_path.write_text(
         json.dumps(merged_rows, indent=2, sort_keys=True, ensure_ascii=False),
@@ -1116,7 +1122,7 @@ def write_repo_metadata_outputs(
 
     df = pd.DataFrame(rows)
 
-    for col in ["topics", "languages_top", "contributors_top", "files_root_entries", "project_foreign_keys"]:
+    for col in ["topics", "languages_top", "contributors_top", "files_root_entries"]:
         if col in df.columns:
             df[col] = df[col].apply(
                 lambda x: json.dumps(x, ensure_ascii=False)
@@ -1127,6 +1133,66 @@ def write_repo_metadata_outputs(
     df.to_parquet(parquet_path, index=False)
 
     return {"json": raw_json_path, "parquet": parquet_path}
+
+
+def write_account_project_metadata_outputs(
+    hackathon_folder: Path,
+    provider_prefix: str,
+    account_name: str,
+    repo_meta: Dict[str, Dict[str, Any]],
+) -> Dict[str, Path]:
+    """Write account-discovered repos using the project-metadata file shape."""
+    hackathon_folder.mkdir(parents=True, exist_ok=True)
+    project_json_path = hackathon_folder / f"{provider_prefix}_github_project_metadata.json"
+    project_parquet_path = hackathon_folder / f"{provider_prefix}_github_project_metadata.parquet"
+
+    rows: List[Dict[str, Any]] = []
+    for repo_url, meta in repo_meta.items():
+        repo_item = {"input_url": repo_url}
+        if isinstance(meta, dict):
+            repo_item.update(meta)
+        rows.append(
+            _project_metadata_row_to_dict(
+                {
+                    "id": None,
+                    "title": None,
+                    "description": None,
+                    "url": repo_url,
+                    "team": [],
+                    "tags": [],
+                    "image_url": "",
+                    "awards": [],
+                    "categories": [],
+                    "hackathon_name": None,
+                    "hackathon_year": None,
+                    "hackathon_location": None,
+                    "project_fk": None,
+                    "project_uid": None,
+                    "project_id": None,
+                    "project_title": None,
+                    "github_repo_urls": [repo_url],
+                    "github_repo_count": 1,
+                    "github_repos_metadata": [repo_item],
+                }
+            )
+        )
+
+    project_json_path.write_text(
+        json.dumps(rows, indent=2, sort_keys=True, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    project_df = pd.DataFrame(rows)
+    for col in project_df.columns:
+        if project_df[col].map(lambda x: isinstance(x, (list, dict))).any():
+            project_df[col] = project_df[col].apply(
+                lambda x: json.dumps(x, ensure_ascii=False)
+                if isinstance(x, (list, dict))
+                else x
+            )
+
+    project_df.to_parquet(project_parquet_path, index=False)
+    return {"project_json": project_json_path, "project_parquet": project_parquet_path}
 
 
 def run_repo_metadata_from_projects_parquet(
@@ -1170,18 +1236,25 @@ def run_repo_metadata_from_projects_parquet(
         readme_text_max_bytes=readme_text_max_bytes,
     )
 
-    repo_fk_map: Dict[str, set[str]] = {}
+    repo_fk_map: Dict[str, str] = {}
     for proj in project_rows:
         fk = proj.get("project_fk")
         if not fk:
             continue
         for repo_url in proj.get("github_repo_urls", []):
-            repo_fk_map.setdefault(repo_url, set()).add(str(fk))
+            fk_text = str(fk)
+            existing_fk = repo_fk_map.get(repo_url)
+            if existing_fk and existing_fk != fk_text:
+                raise ValueError(
+                    f"Repository '{repo_url}' is linked to multiple projects: "
+                    f"'{existing_fk}' and '{fk_text}'."
+                )
+            repo_fk_map[repo_url] = fk_text
 
-    for repo_url, fks in repo_fk_map.items():
+    for repo_url, fk in repo_fk_map.items():
         meta = repo_meta.get(repo_url)
         if isinstance(meta, dict):
-            meta["project_foreign_keys"] = sorted(fks)
+            meta["project_foreign_key"] = fk
 
     out_paths: Dict[str, Path] = {}
     if write_repo_level_output:
@@ -1248,10 +1321,25 @@ def run_repo_metadata_from_account(
         readme_text_max_bytes=readme_text_max_bytes,
     )
 
-    out_paths = write_repo_metadata_outputs(
-        hackathon_folder=hackathon_folder,
-        provider_prefix=provider_prefix,
-        repo_meta=repo_meta,
+    for meta in repo_meta.values():
+        if isinstance(meta, dict) and "project_foreign_key" not in meta:
+            meta["project_foreign_key"] = None
+
+    out_paths: Dict[str, Path] = {}
+    out_paths.update(
+        write_repo_metadata_outputs(
+            hackathon_folder=hackathon_folder,
+            provider_prefix=provider_prefix,
+            repo_meta=repo_meta,
+        )
+    )
+    out_paths.update(
+        write_account_project_metadata_outputs(
+            hackathon_folder=hackathon_folder,
+            provider_prefix=provider_prefix,
+            account_name=account_name,
+            repo_meta=repo_meta,
+        )
     )
 
     return {
