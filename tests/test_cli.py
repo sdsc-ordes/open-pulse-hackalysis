@@ -72,9 +72,15 @@ def test_github_extract_account_invokes_runner(monkeypatch, tmp_path):
     """Check that the account CLI command calls the account runner."""
 
     monkeypatch.setattr(cli, "_get_github_token", lambda: "fake-token")
-    monkeypatch.setattr(cli, "upload_to_hugging_face", lambda output_folder: True)
 
     captured = {}
+    uploaded = {}
+
+    def _fake_upload_to_hugging_face(output_folder):
+        uploaded["path"] = output_folder
+        return True
+
+    monkeypatch.setattr(cli, "upload_to_hugging_face", _fake_upload_to_hugging_face)
 
     def _fake_run_repo_metadata_from_account(**kwargs):
         captured.update(kwargs)
@@ -106,7 +112,6 @@ def test_github_extract_account_invokes_runner(monkeypatch, tmp_path):
             "github-extract-account",
             "-o", str(tmp_path),
             "-a", "openai",
-            "--no-upload",
         ],
     )
 
@@ -114,3 +119,39 @@ def test_github_extract_account_invokes_runner(monkeypatch, tmp_path):
     assert captured["account_name"] == "openai"
     assert captured["provider_prefix"] == "github_account"
     assert captured["hackathon_folder"] == tmp_path / "github-account-openai"
+    assert uploaded["path"] == tmp_path / "github-account-openai"
+
+
+def test_github_extract_shows_extract_first_message_when_projects_dataset_missing(monkeypatch, tmp_path):
+    """Missing project parquet should produce a clear CLI instruction."""
+
+    monkeypatch.setattr(cli, "_get_github_token", lambda: "fake-token")
+    monkeypatch.setattr(cli, "resolve_lauzhack_years", lambda output_folder, years: [2025])
+    monkeypatch.setattr(
+        cli,
+        "get_projects_parquet_path",
+        lambda output_folder, provider, year=None, hackathon_name=None: (
+            tmp_path / "lauzhack-2025" / "lauzhack_projects.parquet",
+            "lauzhack-2025/lauzhack_projects.parquet",
+        ),
+    )
+
+    def _missing_from_hf(output_folder, subpath):
+        raise FileNotFoundError(subpath)
+
+    monkeypatch.setattr(cli, "ensure_local_file_from_hf", _missing_from_hf)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "github-extract",
+            "-o", str(tmp_path),
+            "-p", "lauzhack",
+            "-y", "2025",
+            "--no-upload",
+        ],
+    )
+
+    output = result.stdout.lower() + (result.stderr.lower() if hasattr(result, "stderr") else "")
+    assert result.exit_code == 1
+    assert "run the extract command first" in output

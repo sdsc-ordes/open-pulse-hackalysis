@@ -32,6 +32,33 @@ def _get_github_token() -> Optional[str]:
     return os.getenv("GITHUB_TOKEN")
 
 
+def _ensure_projects_parquet_or_exit(
+    output_folder: Path,
+    local_parquet: Path,
+    hf_subpath: str,
+    *,
+    provider_label: str,
+) -> Path:
+    """Ensure the projects parquet exists locally or can be downloaded."""
+    if local_parquet.exists():
+        return local_parquet
+
+    typer.echo(f"Downloading from Hugging Face: {hf_subpath}")
+    try:
+        return ensure_local_file_from_hf(output_folder, hf_subpath)
+    except Exception:
+        typer.echo(
+            (
+                f"Error: Could not find the source project dataset for {provider_label} "
+                f"locally or on Hugging Face.\n"
+                "Run the extract command first to create it locally, then rerun "
+                "github-extract."
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1) from None
+
+
 @app.command()
 def extract(
     output_folder: Annotated[
@@ -106,10 +133,12 @@ def github_extract( # noqa: PLR0913 because we want to keep all these parameters
 
         for year in years_list:
             local_parquet, hf_subpath = get_projects_parquet_path(output_folder, "lauzhack", year=year)
-
-            if not local_parquet.exists():
-                typer.echo(f"Downloading from Hugging Face: {hf_subpath}")
-                local_parquet = ensure_local_file_from_hf(output_folder, hf_subpath)
+            local_parquet = _ensure_projects_parquet_or_exit(
+                output_folder,
+                local_parquet,
+                hf_subpath,
+                provider_label=f"LauzHack {year}",
+            )
 
             hackathon_folder = output_folder / f"lauzhack-{year}"
             summary = run_repo_metadata_from_projects_parquet(
@@ -130,10 +159,12 @@ def github_extract( # noqa: PLR0913 because we want to keep all these parameters
             raise typer.Exit(code=1)
 
         local_parquet, hf_subpath = get_projects_parquet_path(output_folder, "devpost", hackathon_name=hackathon_name)
-
-        if not local_parquet.exists():
-            typer.echo(f"Downloading from Hugging Face: {hf_subpath}")
-            local_parquet = ensure_local_file_from_hf(output_folder, hf_subpath)
+        local_parquet = _ensure_projects_parquet_or_exit(
+            output_folder,
+            local_parquet,
+            hf_subpath,
+            provider_label=f"Devpost {hackathon_name}",
+        )
 
         hackathon_folder = output_folder / f"devpost-{hackathon_name}"
         summary = run_repo_metadata_from_projects_parquet(
@@ -202,7 +233,7 @@ def github_extract_account( # noqa: PLR0913 because we want to keep all these pa
     typer.echo(f"Wrote {summary['outputs']['project_parquet']}")
 
     if upload:
-        upload_to_hugging_face(output_folder)
+        upload_to_hugging_face(account_folder)
 
     typer.echo("✓ GitHub account extraction complete!")
 
