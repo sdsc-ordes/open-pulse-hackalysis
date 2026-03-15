@@ -76,8 +76,9 @@ def test_github_extract_account_invokes_runner(monkeypatch, tmp_path):
     captured = {}
     uploaded = {}
 
-    def _fake_upload_to_hugging_face(output_folder):
+    def _fake_upload_to_hugging_face(output_folder, path_in_repo=None):
         uploaded["path"] = output_folder
+        uploaded["path_in_repo"] = path_in_repo
         return True
 
     monkeypatch.setattr(cli, "upload_to_hugging_face", _fake_upload_to_hugging_face)
@@ -120,6 +121,7 @@ def test_github_extract_account_invokes_runner(monkeypatch, tmp_path):
     assert captured["provider_prefix"] == "github_account"
     assert captured["hackathon_folder"] == tmp_path / "github-account-openai"
     assert uploaded["path"] == tmp_path / "github-account-openai"
+    assert uploaded["path_in_repo"] == "github-account-openai"
 
 
 def test_github_extract_shows_extract_first_message_when_projects_dataset_missing(monkeypatch, tmp_path):

@@ -9,6 +9,7 @@ from huggingface_hub import upload_folder
 
 def upload_to_hugging_face(
     output_folder: Path,
+    path_in_repo: str | None = None,
     verbose: bool = True,
 ) -> bool:
     """
@@ -16,6 +17,7 @@ def upload_to_hugging_face(
 
     Args:
         output_folder: Path to folder containing extracted data
+        path_in_repo: Optional destination path inside the Hugging Face repo
         verbose: Whether to print upload status messages (default: True)
 
     Returns:
@@ -38,6 +40,7 @@ def upload_to_hugging_face(
             folder_path=str(output_folder),
             repo_id=repo_id,
             repo_type=repo_type,
+            path_in_repo=path_in_repo,
         )
         if verbose:
             typer.echo("  ✓ Successfully uploaded to Hugging Face")

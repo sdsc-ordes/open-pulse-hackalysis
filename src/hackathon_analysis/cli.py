@@ -233,7 +233,7 @@ def github_extract_account( # noqa: PLR0913 because we want to keep all these pa
     typer.echo(f"Wrote {summary['outputs']['project_parquet']}")
 
     if upload:
-        upload_to_hugging_face(account_folder)
+        upload_to_hugging_face(account_folder, path_in_repo=account_folder.name)
 
     typer.echo("✓ GitHub account extraction complete!")
 
