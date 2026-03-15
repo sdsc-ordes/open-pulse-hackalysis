@@ -59,3 +59,52 @@ def test_get_github_token_loads_dotenv(monkeypatch):
 
     monkeypatch.setattr(cli, "load_dotenv", _fake_load_dotenv)
     assert cli._get_github_token() == "token-from-dotenv"
+
+
+def test_github_extract_account_help():
+    """Check if the account extraction help command exits successfully."""
+    result = runner.invoke(cli.app, ["github-extract-account", "--help"])
+    assert result.exit_code == 0
+    assert "account" in result.stdout.lower()
+
+
+def test_github_extract_account_invokes_runner(monkeypatch, tmp_path):
+    """Check that the account CLI command calls the account runner."""
+
+    monkeypatch.setattr(cli, "_get_github_token", lambda: "fake-token")
+    monkeypatch.setattr(cli, "upload_to_hugging_face", lambda output_folder: True)
+
+    captured = {}
+
+    def _fake_run_repo_metadata_from_account(**kwargs):
+        captured.update(kwargs)
+        out_dir = kwargs["hackathon_folder"]
+        out_dir.mkdir(parents=True, exist_ok=True)
+        json_path = out_dir / "github_account_github_repo_metadata.json"
+        parquet_path = out_dir / "github_account_github_repo_metadata.parquet"
+        json_path.write_text("{}", encoding="utf-8")
+        parquet_path.write_text("", encoding="utf-8")
+        return {
+            "repos_found": 2,
+            "outputs": {
+                "json": str(json_path),
+                "parquet": str(parquet_path),
+            },
+        }
+
+    monkeypatch.setattr(cli, "run_repo_metadata_from_account", _fake_run_repo_metadata_from_account)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "github-extract-account",
+            "-o", str(tmp_path),
+            "-a", "openai",
+            "--no-upload",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["account_name"] == "openai"
+    assert captured["provider_prefix"] == "github_account"
+    assert captured["hackathon_folder"] == tmp_path / "github-account-openai"

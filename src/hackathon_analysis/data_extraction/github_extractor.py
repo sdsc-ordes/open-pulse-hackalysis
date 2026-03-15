@@ -109,6 +109,67 @@ def fetch_org_repos(client: "GitHubClient", org: str) -> List[Tuple[str, str]]:
     return repos
 
 
+def fetch_user_repos(client: "GitHubClient", user: str) -> List[Tuple[str, str]]:
+    """Fetch all public repositories for a GitHub user."""
+    repos = []
+    page = 1
+    per_page = 100
+
+    while True:
+        try:
+            user_repos = client.rest_get(
+                f"/users/{user}/repos",
+                {"type": "owner", "per_page": per_page, "page": page, "sort": "updated"},
+            )
+            if not user_repos:
+                break
+
+            for repo_data in user_repos:
+                if not repo_data.get("archived", False):
+                    repos.append((user, repo_data["name"]))
+
+            if len(user_repos) < per_page:
+                break
+
+            page += 1
+        except Exception as e:
+            logging.warning(f"Error fetching repos for user '{user}': {e}")
+            break
+
+    return repos
+
+
+def fetch_account_repos(
+    client: "GitHubClient",
+    account_name: str,
+    account_type: str = "auto",
+) -> List[str]:
+    """Fetch canonical repo URLs for a GitHub user or organization."""
+    normalized_type = account_type.strip().lower()
+    if normalized_type not in {"auto", "org", "user"}:
+        raise ValueError("account_type must be one of: auto, org, user")
+
+    if normalized_type == "auto":
+        account_info = client.rest_get(f"/users/{account_name}")
+        resolved_type = str(account_info.get("type", "")).lower()
+        if resolved_type == "organization":
+            normalized_type = "org"
+        elif resolved_type == "user":
+            normalized_type = "user"
+        else:
+            raise RuntimeError(
+                f"Could not determine GitHub account type for '{account_name}'"
+            )
+
+    if normalized_type == "org":
+        repos = fetch_org_repos(client, account_name)
+    else:
+        repos = fetch_user_repos(client, account_name)
+
+    urls = {f"https://github.com/{owner}/{repo}" for owner, repo in repos}
+    return sorted(urls)
+
+
 def extract_readme_title(md: str, max_lines: int = 50) -> Optional[str]:
     """Extract README title efficiently with single pass.
 
@@ -1148,6 +1209,56 @@ def run_repo_metadata_from_projects_parquet(
         "hackathon_folder": str(hackathon_folder),
         "provider_prefix": provider_prefix,
         "projects_rows": len(df),
+        "repos_found": len(urls),
+        "outputs": {k: str(v) for k, v in out_paths.items()},
+    }
+
+
+def run_repo_metadata_from_account(
+    account_name: str,
+    hackathon_folder: Path,
+    provider_prefix: str,
+    *,
+    token: Optional[str] = None,
+    account_type: str = "auto",
+    top_contributors: int = 8,
+    max_root_entries: int = 200,
+    include_readme_text: bool = True,
+    fetch_readme: bool = True,
+    readme_size_limit_bytes: Optional[int] = None,
+    readme_text_max_bytes: int = 100_000,
+) -> Dict[str, Any]:
+    """Fetch repo metadata directly from a GitHub user or organization."""
+    client = GitHubClient(token=token)
+    urls = fetch_account_repos(
+        client=client,
+        account_name=account_name,
+        account_type=account_type,
+    )
+    logging.info("github account repos found=%d for account=%s", len(urls), account_name)
+
+    repo_meta = fetch_repo_metadata(
+        urls,
+        token=token,
+        top_contributors=top_contributors,
+        max_root_entries=max_root_entries,
+        include_readme_text=include_readme_text,
+        fetch_readme=fetch_readme,
+        readme_size_limit_bytes=readme_size_limit_bytes,
+        readme_text_max_bytes=readme_text_max_bytes,
+    )
+
+    out_paths = write_repo_metadata_outputs(
+        hackathon_folder=hackathon_folder,
+        provider_prefix=provider_prefix,
+        repo_meta=repo_meta,
+    )
+
+    return {
+        "account_name": account_name,
+        "account_type": account_type,
+        "hackathon_folder": str(hackathon_folder),
+        "provider_prefix": provider_prefix,
         "repos_found": len(urls),
         "outputs": {k: str(v) for k, v in out_paths.items()},
     }
