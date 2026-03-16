@@ -48,6 +48,34 @@ def test_extract_invalid_provider():
     assert "unknown" in output or "error" in output or result.exit_code == EXPECTED_EXIT_CODE
 
 
+def test_extract_lauzhack_passes_no_upload(monkeypatch, tmp_path):
+    """Check that extract forwards the upload flag to LauzHack extraction."""
+
+    captured = {}
+
+    def _fake_extract_lauzhack(output_folder, years=None, upload=True):
+        captured["output_folder"] = output_folder
+        captured["years"] = years
+        captured["upload"] = upload
+
+    monkeypatch.setattr(cli, "extract_lauzhack", _fake_extract_lauzhack)
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "extract",
+            "-o", str(tmp_path),
+            "-p", "lauzhack",
+            "--no-upload",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["output_folder"] == tmp_path
+    assert captured["years"] is None
+    assert captured["upload"] is False
+
+
 def test_get_github_token_loads_dotenv(monkeypatch):
     """Check that token lookup loads dotenv values."""
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)

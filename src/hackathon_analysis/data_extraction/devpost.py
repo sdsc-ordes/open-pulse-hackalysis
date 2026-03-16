@@ -9,7 +9,10 @@ from hackathon_analysis.data_extraction.config import HACKATHON_CONFIGS
 
 
 def extract_devpost(
-    output_folder: Path, hackathon_name: str, years: Optional[str] = None
+    output_folder: Path,
+    hackathon_name: str,
+    years: Optional[str] = None,
+    upload: bool = True,
 ):
     """
     Extract hackathon data from Devpost.
@@ -73,4 +76,5 @@ def extract_devpost(
     # This maintains the folder structure ({hackathon-name}/, etc.)
     # and works with both LauzHack and Devpost data
     # Uncomment when Devpost extraction is implemented:
-    # upload_to_hugging_face(output_folder)
+    # if upload:
+    #     upload_to_hugging_face(output_folder)
