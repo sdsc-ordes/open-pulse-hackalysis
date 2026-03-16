@@ -108,6 +108,17 @@ def _build_dedup_key(
     )
 
 
+def _build_project_merge_key(title: str, description: str, url: str) -> str:
+    """Build a merge key for the same project regardless of team split."""
+    return "|".join(
+        [
+            _normalize_title(title),
+            _normalize_title(description),
+            url.strip().lower(),
+        ]
+    )
+
+
 def _build_project_hard_id(project: Dict[str, Any], fallback_idx: Optional[int] = None) -> str:
     """Build deterministic project id from extracted content."""
     title = str(project.get("title", "") or "")
@@ -727,29 +738,43 @@ def process_project_data(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     """
     typer.echo(f"      → Processing {len(projects)} projects")
 
-    processed_projects = []
-    seen_keys = set()
+    processed_projects: List[Dict[str, Any]] = []
+    merged_by_key: Dict[str, Dict[str, Any]] = {}
+
+    def _merge_unique_strings(existing: List[str], new_values: List[str]) -> List[str]:
+        merged: List[str] = []
+        seen: set[str] = set()
+        for value in [*(existing or []), *(new_values or [])]:
+            text = str(value).strip()
+            if not text:
+                continue
+            norm = text.lower()
+            if norm in seen:
+                continue
+            seen.add(norm)
+            merged.append(text)
+        return merged
 
     for project in projects:
-        # Remove duplicates based on multiple fields
         title = project.get("title", "")
         description = project.get("description", "")
         url = project.get("url", "")
         team = project.get("team", []) or []
-        dedupe_key = _build_dedup_key(title, description, url, team)
+        merge_key = _build_project_merge_key(title, description, url)
 
-        if dedupe_key:
-            if dedupe_key in seen_keys:
-                continue
-            seen_keys.add(dedupe_key)
+        if merge_key and merge_key in merged_by_key:
+            existing_project = merged_by_key[merge_key]
+            existing_project["team"] = _merge_unique_strings(existing_project.get("team", []), team)
+            existing_project["tags"] = _merge_unique_strings(existing_project.get("tags", []), project.get("tags", []) or [])
+            existing_project["awards"] = _merge_unique_strings(existing_project.get("awards", []), project.get("awards", []) or [])
+            existing_project["categories"] = _merge_unique_strings(existing_project.get("categories", []), project.get("categories", []) or [])
+            if not existing_project.get("image_url") and project.get("image_url"):
+                existing_project["image_url"] = project.get("image_url", "")
+            continue
 
-        # Clean and validate data
         processed_project = {
             "id": project.get("id"),
-            "project_hard_id": project.get("project_hard_id")
-            or _build_project_hard_id(project),
             "title": title or "Untitled Project",
-            # Limit length
             "description": project.get("description", "")[:500],
             "url": project.get("url", ""),
             "team": project.get("team", []),
@@ -759,17 +784,27 @@ def process_project_data(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             "categories": project.get("categories", []),
         }
 
-        validated = LauzHackProject.model_validate(processed_project).model_dump(
+        validated = LauzHackProject.model_validate(
+            {
+                **processed_project,
+                "project_hard_id": project.get("project_hard_id")
+                or _build_project_hard_id(
+                    {
+                        **processed_project,
+                        "team": sorted(_merge_unique_strings([], processed_project.get("team", []))),
+                    }
+                ),
+            }
+        ).model_dump(
             mode="json",
             exclude_none=True,
         )
-
-        # Remove empty fields
         processed_project = {
             k: v for k, v in validated.items() if v or v == 0
         }
-
         processed_projects.append(processed_project)
+        if merge_key:
+            merged_by_key[merge_key] = processed_project
 
     return processed_projects
 

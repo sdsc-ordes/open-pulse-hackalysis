@@ -139,7 +139,7 @@ class GitHubRepoMetadata(BaseModel):
     watchers: Optional[NonNegativeInt] = 0
     primary_language: Optional[str] = None
     languages_top: List[GitHubLanguageEntry] = Field(default_factory=list)
-    license_spdx: Optional[str] = None
+    license_spdx: Optional[str] = "Unknown"
     license_name: Optional[str] = "Unknown"
     commit_count_default_branch: Optional[NonNegativeInt] = 0
     first_commit_date_default_branch: Optional[dt_datetime] = None

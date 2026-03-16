@@ -30,6 +30,36 @@ def test_process_project_data_assigns_deterministic_project_hard_id():
     assert first[0]["project_hard_id"] == second[0]["project_hard_id"]
 
 
+def test_process_project_data_merges_split_team_rows_into_one_project():
+    raw_projects = [
+        {
+            "id": 17,
+            "title": "Amazon Review Tools",
+            "description": "Summarize user reviews.",
+            "url": "https://github.com/AliEmreSenel/LauzHack2023",
+            "team": ["Ali Emre Senel", "Lorenzo Calda"],
+        },
+        {
+            "id": 18,
+            "title": "Amazon Review Tools",
+            "description": "Summarize user reviews.",
+            "url": "https://github.com/AliEmreSenel/LauzHack2023",
+            "team": ["Alberto Paolo Lolli"],
+        },
+    ]
+
+    processed = process_project_data(raw_projects)
+
+    assert len(processed) == 1
+    assert processed[0]["title"] == "Amazon Review Tools"
+    assert processed[0]["url"] == "https://github.com/AliEmreSenel/LauzHack2023"
+    assert processed[0]["team"] == [
+        "Ali Emre Senel",
+        "Lorenzo Calda",
+        "Alberto Paolo Lolli",
+    ]
+
+
 def test_github_repo_metadata_includes_project_foreign_key(tmp_path: Path):
     projects_df = pd.DataFrame(
         [
