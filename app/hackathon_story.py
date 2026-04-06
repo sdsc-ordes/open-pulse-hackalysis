@@ -185,16 +185,30 @@ def load_predictions() -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].apply(_safe_parse_list)
 
-    # Derive year from per-year metadata JSONs
-    year_map = {}
+    # Derive source from per-year metadata JSONs and account directories
+    source_map = {}
     for year in [2023, 2024, 2025]:
         meta_path = DATA_ROOT / f"lauzhack-{year}" / "lauzhack_github_repo_metadata.json"
         if meta_path.exists():
             with open(meta_path) as f:
                 urls = list(json.load(f).keys())
             for url in urls:
-                year_map[url] = year
-    df["year"] = df["repo_url"].map(year_map).apply(lambda x: str(int(x)) if pd.notna(x) else "Account Repos")
+                source_map[url] = str(year)
+
+    # Map account repos to their source account
+    account_dirs = [d for d in DATA_ROOT.iterdir() if d.is_dir() and d.name.startswith("github-account-")]
+    for account_dir in account_dirs:
+        account_name = account_dir.name.replace("github-account-", "")
+        meta_files = list(account_dir.glob("*_repo_metadata.json")) + list(account_dir.glob("*_github_repo_metadata.json"))
+        for meta_file in meta_files:
+            with open(meta_file) as f:
+                urls = list(json.load(f).keys())
+            for url in urls:
+                source_map[url] = f"Account: {account_name}"
+
+    df["year"] = df["repo_url"].map(source_map).fillna("Unknown Source")
+    # Keep a simplified column for backward compat
+    df["is_hackathon_year"] = df["year"].str.match(r"^\d{4}$")
 
     # Prediction agreement
     naive_pred = df["repo_predicted_flag"].astype(int)
@@ -386,6 +400,106 @@ def compute_rf_importances(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# Helper: Concept Network Graph
+# ---------------------------------------------------------------------------
+
+
+@st.cache_data
+def compute_concept_network(df: pd.DataFrame, min_similarity: float = 0.15, max_concept_freq: float = 0.15) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build a network of repos connected by shared *rare* concepts using Jaccard similarity.
+
+    Generic concepts (appearing in >max_concept_freq of repos) are excluded so connections
+    reflect genuinely shared domain knowledge, not "both use Python."
+
+    Returns node and edge DataFrames for plotting.
+    """
+    from itertools import combinations
+
+    has_concepts = df[df["concept_list"].apply(lambda x: isinstance(x, list) and len(x) > 0)].copy()
+    n_repos = len(has_concepts)
+
+    # Compute concept document frequency and filter out common ones
+    concept_freq: dict[str, int] = {}
+    for _, row in has_concepts.iterrows():
+        for c in row["concept_list"]:
+            concept_freq[c] = concept_freq.get(c, 0) + 1
+
+    freq_cutoff = int(n_repos * max_concept_freq)
+    rare_concepts = {c for c, n in concept_freq.items() if 2 <= n <= freq_cutoff}
+
+    # Build per-repo rare concept sets
+    repo_rare: dict[int, set[str]] = {}
+    for idx, row in has_concepts.iterrows():
+        rare = {c for c in row["concept_list"] if c in rare_concepts}
+        if len(rare) >= 2:
+            repo_rare[idx] = rare
+
+    # Build inverted index for efficiency (only iterate co-occurring pairs)
+    concept_to_idxs: dict[str, set[int]] = {}
+    for idx, concepts in repo_rare.items():
+        for c in concepts:
+            concept_to_idxs.setdefault(c, set()).add(idx)
+
+    # Compute Jaccard similarity for co-occurring pairs
+    pair_shared: dict[tuple[int, int], set[str]] = {}
+    for concept, idxs in concept_to_idxs.items():
+        if len(idxs) > 40:
+            continue
+        idx_list = sorted(idxs)
+        for a in range(len(idx_list)):
+            for b in range(a + 1, len(idx_list)):
+                key = (idx_list[a], idx_list[b])
+                if key not in pair_shared:
+                    pair_shared[key] = set()
+                pair_shared[key].add(concept)
+
+    edges = []
+    for (i, j), shared in pair_shared.items():
+        if len(shared) < 5:  # require at least 5 rare concepts in common to avoid noise
+            continue
+        union_size = len(repo_rare[i] | repo_rare[j])
+        jaccard = len(shared) / union_size if union_size > 0 else 0
+        if jaccard >= min_similarity:
+            # Pick top-5 rarest shared concepts as examples
+            examples = sorted(shared, key=lambda c: concept_freq.get(c, 999))[:5]
+            edges.append({
+                "source": i,
+                "target": j,
+                "jaccard": round(jaccard, 3),
+                "shared_count": len(shared),
+                "example_concepts": ", ".join(examples),
+            })
+
+    edge_df = pd.DataFrame(edges) if edges else pd.DataFrame(
+        columns=["source", "target", "jaccard", "shared_count", "example_concepts"]
+    )
+
+    # Build nodes
+    connected_idxs = set()
+    if len(edge_df) > 0:
+        connected_idxs = set(edge_df["source"]) | set(edge_df["target"])
+
+    node_rows = []
+    for idx in connected_idxs:
+        row = has_concepts.loc[idx]
+        desc = row.get("description", "")
+        node_rows.append({
+            "idx": idx,
+            "name": row.get("name_with_owner", str(idx)),
+            "is_hackathon": bool(row.get("true_hackathon_repos", False)),
+            "n_concepts": len(row["concept_list"]) if isinstance(row["concept_list"], list) else 0,
+            "n_rare_concepts": len(repo_rare.get(idx, set())),
+            "primary_language": row.get("primary_language", "Unknown"),
+            "description": str(desc) if pd.notna(desc) else "",
+        })
+    node_df = pd.DataFrame(node_rows) if node_rows else pd.DataFrame(
+        columns=["idx", "name", "is_hackathon", "n_concepts", "n_rare_concepts", "primary_language", "description"]
+    )
+
+    return node_df, edge_df
+
+
+# ---------------------------------------------------------------------------
 # Helper: Confusion Matrix Plot
 # ---------------------------------------------------------------------------
 
@@ -429,11 +543,12 @@ def render_introduction(df: pd.DataFrame):
     <p style='text-align:center; color:#64748b; font-size:1.15rem; max-width:800px; margin:auto;'>
         Not all repositories linked to hackathon project pages are actual hackathon code.
         Some are pre-existing libraries, framework forks, or personal utilities.
-        We built a pipeline to identify <b>true hackathon repos</b> &mdash; and the answer
-        required more than just looking at commit dates.
+        We built a general-purpose pipeline to identify <b>true hackathon repos</b> &mdash;
+        and validated it on <b>LauzHack</b> (2023&ndash;2025) as our case study.
     </p>
     <p style='text-align:center; color:#94a3b8; font-size:0.9rem; margin-top:8px;'>
-        Navigate the story using the sidebar on the left.
+        The methodology is hackathon-agnostic; LauzHack-specific details are clearly marked throughout.
+        Navigate the story using the sidebar.
     </p>
     """,
         unsafe_allow_html=True,
@@ -445,68 +560,100 @@ def render_introduction(df: pd.DataFrame):
     valid = df[df["has_valid_metadata"]]
     n_projects = df["project_foreign_key"].dropna().nunique()
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Hackathon Projects", f"{n_projects}", help="Unique projects from LauzHack 2023, 2024, and 2025")
+    c1.metric("Hackathon Projects", f"{n_projects}", help="Unique hackathon projects in our case study dataset")
     c2.metric("GitHub Repos", f"{len(df)}", help=f"{len(df)} total linked repositories, {len(valid)} with complete GitHub metadata")
-    hackathon_years = sorted(y for y in df["year"].unique() if y != "Account Repos")
-    c3.metric("Years Analyzed", str(len(hackathon_years)), help=f"{', '.join(hackathon_years)} editions of the LauzHack hackathon")
+    hackathon_years = sorted(y for y in df["year"].unique() if y.isdigit())
+    c3.metric("Years Analyzed", str(len(hackathon_years)), help=f"{', '.join(hackathon_years)} editions (case study: LauzHack)")
     unique_concepts = df["concept_list"].explode().nunique()
     c4.metric(
         "Topic Tags",
         f"{unique_concepts:,}",
         help="Topics (like 'machine learning' or 'web development') automatically assigned to each "
-        "repository by EPFL's knowledge database. Think of them as smart tags describing what a project is about.",
+        "repository by a knowledge database. Think of them as smart tags describing what a project is about.",
     )
 
     st.markdown("---")
 
-    # Dataset composition
-    st.subheader("Dataset Composition")
-    st.caption(
-        "Not every repository is usable or represents hackathon code. These bars show how many "
-        "repositories have each attribute. Note: these are **independent properties**, not "
-        "sequential filters — for example, a repo can have topic tags but lack complete GitHub metadata."
-    )
-
+    # Data quality + label breakdown — two separate concerns
     total = len(df)
     with_metadata = int(df["has_valid_metadata"].sum())
+    with_concepts = int((df["n_concepts"] > 0).sum())
     linked = int(df["is_linked_project"].sum())
     true_hack = int(df["true_hackathon_repos"].sum())
-    with_concepts = int((df["n_concepts"] > 0).sum())
 
-    composition_data = pd.DataFrame(
-        {
-            "Attribute": [
-                "All Repositories Collected",
-                "Have Complete GitHub Info",
-                "Have Topic Tags",
-                "Linked to a Hackathon Project Page",
-                "Confirmed Hackathon Code",
-            ],
-            "Count": [total, with_metadata, with_concepts, linked, true_hack],
-        }
-    )
+    dq_col, label_col = st.columns(2)
 
-    fig_composition = px.bar(
-        composition_data,
-        x="Count",
-        y="Attribute",
-        orientation="h",
-        color_discrete_sequence=[SDSC_BLUE],
-        text="Count",
-    )
-    fig_composition.update_layout(
-        height=320, margin=dict(l=20, r=20, t=20, b=20),
-        paper_bgcolor="white",
-        yaxis=dict(categoryorder="array", categoryarray=list(reversed(composition_data["Attribute"]))),
-        xaxis_title="Number of Repositories",
-        yaxis_title="",
-    )
-    fig_composition.update_traces(textposition="outside", textfont_size=14)
-    st.plotly_chart(fig_composition, use_container_width=True)
-    st.caption(
-        f"*{true_hack - linked} repos are confirmed as hackathon code via manual labeling "
-        f"even though they are not directly linked to a hackathon project page.*"
-    )
+    with dq_col:
+        st.subheader("Data Quality Pipeline")
+        st.caption(
+            "Each stage filters the previous one. Repos need complete GitHub metadata "
+            "before we can extract features, and topic tags require metadata first."
+        )
+
+        pipeline_data = pd.DataFrame(
+            {
+                "Stage": [
+                    "All Repositories Collected",
+                    "Have Complete GitHub Metadata",
+                    "Have Topic Tags",
+                ],
+                "Count": [total, with_metadata, with_concepts],
+            }
+        )
+
+        fig_pipeline = px.funnel(
+            pipeline_data,
+            x="Count",
+            y="Stage",
+            color_discrete_sequence=[SDSC_BLUE],
+        )
+        fig_pipeline.update_layout(
+            height=300, margin=dict(l=20, r=20, t=20, b=20),
+            paper_bgcolor="white",
+        )
+        fig_pipeline.update_traces(textinfo="value+percent initial", textfont_size=14)
+        st.plotly_chart(fig_pipeline, use_container_width=True)
+
+    with label_col:
+        st.subheader("Ground Truth Labels")
+        st.caption(
+            "How repos were labeled — independent of data quality. "
+            "Labels come from project page links + manual review."
+        )
+
+        hack_and_linked = int(((df["true_hackathon_repos"]) & (df["is_linked_project"])).sum())
+        hack_not_linked = true_hack - hack_and_linked
+
+        label_data = pd.DataFrame(
+            {
+                "Category": [
+                    "Non-Hackathon Repos",
+                    "Hackathon (linked to project page)",
+                    "Hackathon (manually confirmed)",
+                ],
+                "Count": [total - true_hack, hack_and_linked, hack_not_linked],
+                "Type": ["Non-Hackathon", "Hackathon", "Hackathon"],
+            }
+        )
+
+        fig_labels = px.bar(
+            label_data,
+            x="Count",
+            y="Category",
+            orientation="h",
+            color="Type",
+            color_discrete_map={"Hackathon": HACKATHON_COLOR, "Non-Hackathon": NON_HACKATHON_COLOR},
+            text="Count",
+        )
+        fig_labels.update_layout(
+            height=300, margin=dict(l=20, r=20, t=20, b=20),
+            paper_bgcolor="white",
+            yaxis_title="",
+            xaxis_title="Number of Repositories",
+            showlegend=False,
+        )
+        fig_labels.update_traces(textposition="outside", textfont_size=14)
+        st.plotly_chart(fig_labels, use_container_width=True)
 
     # Year breakdown + Language treemap side by side
     col_left, col_right = st.columns(2)
@@ -514,24 +661,30 @@ def render_introduction(df: pd.DataFrame):
     with col_left:
         st.subheader("Repositories by Source")
         st.caption(
-            "Each bar shows repos from a LauzHack edition. 'Account Repos' are other repositories "
-            "from participants' GitHub accounts, included as non-hackathon examples for comparison."
+            "Bars show where each repository came from. LauzHack editions are the hackathon data; "
+            "personal/org account repos serve as non-hackathon examples for comparison."
         )
         year_counts = df["year"].value_counts().reset_index()
         year_counts.columns = ["Source", "Repos"]
         year_counts = year_counts.sort_values("Source")
+
+        # Build color map: hackathon years in brand colors, accounts in warm tones
+        account_colors = ["#e8a838", "#d97706", "#b45309"]
+        account_sources = sorted([s for s in year_counts["Source"] if s.startswith("Account:")])
+        color_map = {
+            "2023": SDSC_GREEN,
+            "2024": SDSC_BLUE,
+            "2025": SDSC_NAVY,
+        }
+        for i, src in enumerate(account_sources):
+            color_map[src] = account_colors[i % len(account_colors)]
 
         fig_year = px.bar(
             year_counts,
             x="Source",
             y="Repos",
             color="Source",
-            color_discrete_map={
-                "2023": SDSC_GREEN,
-                "2024": SDSC_BLUE,
-                "2025": SDSC_NAVY,
-                "Account Repos": "#e8a838",
-            },
+            color_discrete_map=color_map,
             text="Repos",
         )
         fig_year.update_layout(
@@ -539,6 +692,7 @@ def render_introduction(df: pd.DataFrame):
             showlegend=False,
             xaxis_title="",
             yaxis_title="Number of Repositories",
+            xaxis_tickangle=-30,
         )
         fig_year.update_traces(textposition="outside")
         st.plotly_chart(fig_year, use_container_width=True)
@@ -582,10 +736,14 @@ def render_features(df: pd.DataFrame):
     <h1 style='color:#26235c;'>What Makes a Hackathon Repo?</h1>
     <p style='color:#64748b; font-size:1.05rem;'>
         Now that we've seen the dataset, let's look at what makes hackathon repositories
-        different from regular ones. From the raw data, we extracted <b>numeric and boolean features</b>
+        different from regular ones. We extracted <b>numeric and boolean features</b>
         for each repository &mdash; things like how many days it was active, how long the README is,
-        whether it has tests, and what topics it covers. We then enriched repos with smart topic tags
-        from the EPFL Graph API.
+        whether it has tests, and what topics it covers. These <b>structural features</b> are
+        hackathon-agnostic and would apply to any hackathon dataset.
+    </p>
+    <p style='color:#94a3b8; font-size:0.9rem;'>
+        We also enriched repos with topic tags from a knowledge database
+        (EPFL Graph API in our LauzHack case study) — those results are marked with 🏷️ below.
     </p>
     """,
         unsafe_allow_html=True,
@@ -701,11 +859,11 @@ def render_features(df: pd.DataFrame):
         st.plotly_chart(fig_bool, use_container_width=True)
 
     with col_b:
-        st.subheader("Topic Tag Density")
+        st.subheader("Topic Tag Density 🏷️")
         st.caption(
-            "How many topic tags each repository received. Hackathon repos (green) tend to "
-            "cluster around fewer topics because they focus on a single prototype, while "
-            "non-hackathon repos (blue) often span more topics."
+            "🏷️ *Case-study-specific (EPFL topics).* How many topic tags each repository received. "
+            "Hackathon repos (green) tend to cluster around fewer topics because they focus on "
+            "a single prototype, while non-hackathon repos (blue) often span more topics."
         )
 
         fig_concepts = px.histogram(
@@ -727,12 +885,14 @@ def render_features(df: pd.DataFrame):
     st.markdown("---")
 
     # Fisher's exact test - discriminative concepts
-    st.subheader("Topics That Best Distinguish Hackathon from Non-Hackathon Repos")
+    st.subheader("Topics That Best Distinguish Hackathon from Non-Hackathon Repos 🏷️")
     st.caption(
-        "We used a statistical test (Fisher's exact test) to find which topics appear far more often "
-        "in one group than the other. Bars pointing **right** (green) are topics strongly associated with "
-        "hackathon repos. Bars pointing **left** (blue) signal non-hackathon repos. Longer bars = stronger "
-        "association. A value of +2 means the odds of appearing in a hackathon repo are roughly 4× higher."
+        "🏷️ *Case-study-specific (EPFL topics).* We used a statistical test (Fisher's exact test) to find "
+        "which topics appear far more often in one group than the other. Bars pointing **right** (green) are "
+        "topics strongly associated with hackathon repos. Bars pointing **left** (blue) signal non-hackathon "
+        "repos. Longer bars = stronger association. A value of +2 means the odds of appearing in a hackathon "
+        "repo are roughly 4× higher. These specific topics are tied to our LauzHack dataset and may differ "
+        "for other hackathons."
     )
     st.caption(
         "*P-values have been corrected for multiple comparisons using Benjamini-Hochberg FDR correction. "
@@ -1262,21 +1422,26 @@ def render_conclusions(df: pd.DataFrame):
     corr_metrics = compute_metrics(y_true, valid["corr_weighted_flag"].astype(int))
     unique_concepts = df["concept_list"].explode().nunique()
 
-    # Key takeaways
+    # General takeaways
+    st.markdown("#### General Findings (hackathon-agnostic)")
     st.success(
         "**Hackathon repos have a distinctive temporal fingerprint.** "
         "Burst activity in 1-2 days, then silence. The number of days with code changes "
         "is the single strongest signal separating hackathon repos from regular ones."
     )
-    st.info(
-        f"**Topic tags add useful signal beyond code structure.** "
-        f"The EPFL knowledge database identified {unique_concepts:,}+ topics. A statistical test revealed "
-        f"which topics are strongly linked to hackathon vs. production code."
-    )
     st.warning(
         f"**Simple rules achieve high precision but miss nuanced cases.** "
         f"The keyword approach would miss {1 - naive_metrics['Recall']:.0%} of actual hackathon repos. "
         f"Machine learning captures the complex reality."
+    )
+
+    # Case-study-specific takeaways
+    st.markdown("#### LauzHack Case Study Findings 🏷️")
+    st.info(
+        f"**Topic tags add useful signal beyond code structure.** "
+        f"The EPFL knowledge database identified {unique_concepts:,}+ topics in the LauzHack dataset. "
+        f"A statistical test revealed which topics are strongly linked to hackathon vs. production code. "
+        f"Different knowledge databases would yield different topic distributions for other hackathons."
     )
 
     col1, col2 = st.columns(2)
@@ -1287,7 +1452,7 @@ def render_conclusions(df: pd.DataFrame):
             <h3 style='color:#5a8020; margin-top:0;'>What Worked</h3>
             <ul style='color:#475569;'>
                 <li>The ML model correctly classified <b>{rf_metrics['Accuracy']:.1%}</b> of repos, with an F1 score of <b>{rf_metrics['F1']:.1%}</b></li>
-                <li>Adding topic tags from EPFL gave the model information it couldn't get from code structure alone</li>
+                <li>Adding topic tags (🏷️ from EPFL in our case study) gave the model information it couldn't get from code structure alone</li>
                 <li>We carefully avoided letting the model "peek" at the answers during training</li>
                 <li>Adjusting for the class split prevented the model from being biased toward the majority</li>
             </ul>
@@ -1305,7 +1470,7 @@ def render_conclusions(df: pd.DataFrame):
                 <li>Keyword matching alone was <b>too cautious</b> &mdash; it missed {1 - naive_metrics['Recall']:.0%} of actual hackathon repos</li>
                 <li>Statistical weighting <b>flagged too many repos</b> as hackathon (only {corr_metrics['Precision']:.0%} were correct)</li>
                 <li>Some labels in our training data were noisy &mdash; organizational repos linked to projects but not actually hackathon code</li>
-                <li>Using individual topic tags as yes/no features made the model too specific to LauzHack</li>
+                <li>🏷️ Using individual topic tags as yes/no features made the model too specific to the LauzHack case study</li>
             </ul>
         </div>
         """,
@@ -1320,7 +1485,7 @@ def render_conclusions(df: pd.DataFrame):
             f"""
         **Known limitations of this analysis:**
         - **Small dataset** — {len(valid)} repos is enough for meaningful patterns but limits the complexity of models we can reliably train. Results should be validated on a larger corpus.
-        - **Single hackathon** — All data comes from LauzHack. The model might not generalize to hackathons with different tech stacks, team sizes, or durations (e.g., Devpost, MLH events).
+        - **Single hackathon as case study** — All data comes from LauzHack. While the methodology is general, the trained model and topic-based features might not generalize to hackathons with different tech stacks, team sizes, or durations (e.g., Devpost, MLH events).
         - **Noisy labels** — Some repos are linked to hackathon projects via organizational accounts but don't contain hackathon code. This adds noise to both training and evaluation.
         - **No hyperparameter tuning** — The Random Forest parameters (100 trees, max depth 8) were reasonable defaults, not optimized via grid search or Bayesian optimization.
         - **No confidence intervals** — Metrics are point estimates from a single 5-fold CV run. Per-fold variance is not shown.
@@ -1331,6 +1496,176 @@ def render_conclusions(df: pd.DataFrame):
         - Add temporal features (e.g., commit burst detection, time-of-day patterns)
         - Use SHAP values for better model interpretability
         """
+        )
+
+    st.markdown("---")
+
+    # Concept Network Graph
+    st.subheader("Concept Network: How Repos Are Connected 🏷️")
+    st.caption(
+        "🏷️ *Case-study-specific (EPFL topics).* Two repos are linked when they share enough "
+        "**rare, domain-specific** topics — generic ones like 'Python' or 'GitHub' that appear "
+        "in 20%+ of repos are excluded so that connections reflect genuine thematic similarity."
+    )
+
+    net_col1, net_col2 = st.columns([1, 3])
+    with net_col1:
+        min_similarity = st.number_input(
+            "Min Jaccard similarity",
+            min_value=0.01,
+            max_value=1.0,
+            value=0.15,
+            step=0.01,
+            format="%.2f",
+            help="Jaccard similarity = (shared rare concepts) / (combined rare concepts). "
+                 "0.15 means ≥15% topic overlap. Higher = fewer, stronger connections.",
+        )
+        max_concept_pct = st.number_input(
+            "Max concept frequency (%)",
+            min_value=1,
+            max_value=50,
+            value=15,
+            step=1,
+            help="Exclude concepts appearing in more than this % of repos. "
+                 "Lower = stricter (only truly rare concepts count).",
+        )
+
+    node_df, edge_df = compute_concept_network(df, min_similarity=min_similarity, max_concept_freq=max_concept_pct / 100)
+
+    with net_col2:
+        if len(node_df) > 0:
+            n_hack = node_df["is_hackathon"].sum()
+            n_non = len(node_df) - n_hack
+            st.markdown(
+                f"**{len(node_df)} repos** ({n_hack} hackathon, {n_non} non-hackathon) "
+                f"connected by **{len(edge_df)} links**"
+            )
+        else:
+            st.markdown("No connections at this threshold.")
+
+    if len(edge_df) > 0 and len(node_df) > 0:
+        import networkx as nx
+
+        G = nx.Graph()
+        G.add_nodes_from(node_df["idx"].tolist())
+        for _, e in edge_df.iterrows():
+            G.add_edge(int(e["source"]), int(e["target"]), weight=e["jaccard"])
+        positions = nx.spring_layout(G, seed=42, k=1.5 / (len(G.nodes) ** 0.5 + 1), iterations=50, weight="weight")
+
+        node_df = node_df.copy()
+        node_df["x"] = node_df["idx"].map(lambda i: positions[i][0])
+        node_df["y"] = node_df["idx"].map(lambda i: positions[i][1])
+        node_df["label"] = node_df["is_hackathon"].map({True: "Hackathon", False: "Non-Hackathon"})
+
+        fig_net = go.Figure()
+
+        # Edges as a single trace
+        edge_x, edge_y = [], []
+        for _, e in edge_df.iterrows():
+            s, t = int(e["source"]), int(e["target"])
+            edge_x += [positions[s][0], positions[t][0], None]
+            edge_y += [positions[s][1], positions[t][1], None]
+
+        fig_net.add_trace(go.Scatter(
+            x=edge_x, y=edge_y,
+            mode="lines",
+            line=dict(width=0.5, color="rgba(100,116,139,0.25)"),
+            hoverinfo="none",
+            showlegend=False,
+        ))
+
+        # Nodes
+        for label, color in [("Hackathon", HACKATHON_COLOR), ("Non-Hackathon", NON_HACKATHON_COLOR)]:
+            subset = node_df[node_df["label"] == label]
+            fig_net.add_trace(go.Scatter(
+                x=subset["x"], y=subset["y"],
+                mode="markers",
+                marker=dict(
+                    size=subset["n_rare_concepts"].clip(lower=5, upper=60).apply(lambda v: 7 + v * 0.12),
+                    color=color,
+                    line=dict(width=1, color="white"),
+                    opacity=0.85,
+                ),
+                name=label,
+                text=subset.apply(
+                    lambda r: f"<b>{r['name']}</b><br>"
+                              f"Language: {r['primary_language']}<br>"
+                              f"Total topics: {r['n_concepts']} ({r['n_rare_concepts']} rare)<br>"
+                              f"{r['description'][:80] + '...' if len(r['description']) > 80 else r['description']}",
+                    axis=1,
+                ),
+                hoverinfo="text",
+            ))
+
+        fig_net.update_layout(
+            height=650,
+            plot_bgcolor="#fafcf8",
+            paper_bgcolor="white",
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False, title=""),
+            legend=dict(orientation="h", y=1.02, font=dict(size=13)),
+            margin=dict(l=20, r=20, t=40, b=20),
+        )
+        st.plotly_chart(fig_net, use_container_width=True)
+
+        # --- Repo similarity explorer ---
+        st.markdown("**Find similar repos:** select a repository to see its closest matches by topic similarity.")
+        repo_names = sorted(node_df["name"].tolist())
+        selected_repo = st.selectbox("Select a repository", repo_names, index=None, placeholder="Type to search...")
+
+        if selected_repo:
+            sel_idx = int(node_df[node_df["name"] == selected_repo]["idx"].iloc[0])
+            # Find edges involving this repo
+            neighbors = edge_df[(edge_df["source"] == sel_idx) | (edge_df["target"] == sel_idx)].copy()
+            neighbors["neighbor_idx"] = neighbors.apply(
+                lambda r: int(r["target"]) if int(r["source"]) == sel_idx else int(r["source"]),
+                axis=1,
+            )
+            neighbors = neighbors.sort_values("jaccard", ascending=False)
+
+            if len(neighbors) > 0:
+                neighbor_info = []
+                for _, e in neighbors.iterrows():
+                    n_idx = e["neighbor_idx"]
+                    n_row = node_df[node_df["idx"] == n_idx]
+                    if len(n_row) == 0:
+                        continue
+                    n_row = n_row.iloc[0]
+                    neighbor_info.append({
+                        "Repository": n_row["name"],
+                        "Similarity": f"{e['jaccard']:.0%}",
+                        "Shared Rare Concepts": e["shared_count"],
+                        "Example Concepts": e["example_concepts"],
+                        "Type": "Hackathon" if n_row["is_hackathon"] else "Non-Hackathon",
+                        "Language": n_row["primary_language"],
+                    })
+                st.dataframe(pd.DataFrame(neighbor_info), use_container_width=True, hide_index=True)
+            else:
+                st.info("No connections for this repo at the current threshold.")
+
+        with st.expander("How this graph works"):
+            st.markdown(
+                """
+            **Why filter out common concepts?** Topics like "Python", "GitHub", or "Open source" appear
+            in 20-44% of all repos. Sharing these means nothing — it just says both repos use Python.
+            By excluding concepts above the frequency threshold, connections only form when repos share
+            genuinely distinctive topics (e.g., "gesture recognition", "semantic web", "AI alignment").
+
+            **Jaccard similarity** measures overlap as: (shared rare concepts) ÷ (total rare concepts in either repo).
+            This normalizes for repo size — a small repo sharing 5 rare concepts with another small repo
+            scores higher than a huge repo sharing 5 out of 200.
+
+            **What to look for:**
+            - **Clusters of same color** → repos in similar domains tend to be the same type (hackathon or not)
+            - **Mixed clusters** → some domains have both hackathon and non-hackathon repos
+            - **Isolated pairs** → repos with very niche, unique topic overlap
+            - Use the **"Find similar repos"** dropdown to explore specific connections
+            """
+            )
+    else:
+        st.info(
+            f"No connections at Jaccard ≥ {min_similarity:.0%} with concept frequency ≤ {max_concept_pct}%. "
+            "Try lowering similarity or raising the frequency cutoff."
         )
 
     st.markdown("---")
@@ -1450,9 +1785,10 @@ def render_conclusions(df: pd.DataFrame):
         """
     | Phase | What We Did | Key Decision |
     |-------|-------------|--------------|
-    | **Data Collection** | Built tools to automatically gather data from LauzHack and GitHub | Analyzed individual repositories rather than whole projects |
+    | **Data Collection** | Built general-purpose tools to gather hackathon + GitHub data | Analyzed individual repositories rather than whole projects |
+    | **Case Study** | Applied pipeline to LauzHack (2023–2025) as validation dataset | 213 hackathon repos + 274 account repos for contrast |
     | **Labeling** | 3 people manually checked repos + automatic matching via project links | Combined human judgment with automated matching for scale |
-    | **Topic Tagging** | Used EPFL's knowledge database to tag repos with topics | Only tagged repos that hadn't been tagged yet, saving API calls |
+    | **Topic Tagging** | 🏷️ Used EPFL's knowledge database to tag repos with topics | Only tagged repos that hadn't been tagged yet, saving API calls |
     | **Feature Engineering** | Extracted numeric and boolean features per repo (activity, quality, topics) | Carefully excluded features that would let the model "cheat" |
     | **Predicting** | Compared three methods: keyword rules, statistical weighting, ML | Machine learning was the clear winner with balanced performance |
     """
@@ -1493,9 +1829,10 @@ def main():
             """
         <div style='color:#94a3b8; font-size:0.8rem;'>
             <b>Author:</b> Eisha Tir Raazia<br>
-            <b>Data:</b> LauzHack 2023-2025<br>
+            <b>Case Study:</b> LauzHack 2023-2025<br>
             <b>Repos:</b> 487 analyzed<br>
-            <b>Methods:</b> 3 compared
+            <b>Methods:</b> 3 compared<br>
+            <span style='font-size:0.75rem;'>🏷️ = case-study-specific</span>
         </div>
         """,
             unsafe_allow_html=True,
