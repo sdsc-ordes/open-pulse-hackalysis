@@ -1796,6 +1796,170 @@ def render_conclusions(df: pd.DataFrame):
 
 
 # ---------------------------------------------------------------------------
+# Act 6: Live Prediction
+# ---------------------------------------------------------------------------
+
+
+def render_predict():
+    st.markdown(
+        """
+    <h1 style='color:#26235c;'>Try It Yourself</h1>
+    <p style='color:#64748b; font-size:1.05rem;'>
+        Paste any public GitHub repository URL below and all three methods
+        will classify it in real time.
+    </p>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    repo_url = st.text_input(
+        "GitHub Repository URL",
+        placeholder="https://github.com/owner/repo",
+    )
+
+    if not repo_url:
+        st.info("Enter a GitHub repository URL above and press Enter.")
+        return
+
+    # Validate URL format
+    if "github.com" not in repo_url:
+        st.error("Please enter a valid GitHub URL (e.g. https://github.com/owner/repo)")
+        return
+
+    try:
+        with st.spinner("Fetching repository metadata from GitHub..."):
+            from hackathon_analysis.prediction.pipeline import predict_repo
+            result = predict_repo(repo_url)
+    except Exception as e:
+        st.error(f"Failed to fetch repository: {e}")
+        return
+
+    meta = result["metadata"]
+    naive = result["naive_rule_based"]
+    corr = result["correlation_weighted"]
+    rf = result["random_forest"]
+
+    st.markdown("---")
+
+    # Repo info card
+    st.markdown(
+        f"""
+    <div style='padding:16px; background:linear-gradient(135deg, #f8fafc, #eef0f8);
+         border-radius:12px; border:1px solid #c8cde3; margin-bottom:1rem;'>
+        <h3 style='margin:0; color:#26235c;'>{meta.get('owner', '')}/{meta.get('repo', '')}</h3>
+        <p style='margin:6px 0 0 0; color:#64748b;'>
+            Language: <b>{meta.get('language', 'N/A')}</b> &nbsp;|&nbsp;
+            Stars: <b>{meta.get('stars', 0):,}</b> &nbsp;|&nbsp;
+            Forks: <b>{meta.get('forks', 0):,}</b> &nbsp;|&nbsp;
+            Commits: <b>{meta.get('commits', 0):,}</b> &nbsp;|&nbsp;
+            Contributors: <b>{meta.get('contributors', 0)}</b> &nbsp;|&nbsp;
+            Active days: <b>{meta.get('active_days', 0)}</b> &nbsp;|&nbsp;
+            Repo age: <b>{meta.get('repo_age_days', 0):,} days</b>
+        </p>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    # Consensus
+    votes = sum([naive["flag"], corr["flag"], rf["flag"]])
+    if votes >= 2:
+        verdict_color = SDSC_GREEN
+        verdict_bg = "#f3f7ea"
+        verdict_border = "#c5e085"
+        verdict_text = "HACKATHON REPO"
+        verdict_detail = f"{votes}/3 methods agree this is a hackathon repository"
+    else:
+        verdict_color = SDSC_BLUE
+        verdict_bg = "#eef0f8"
+        verdict_border = "#c8cde3"
+        verdict_text = "NOT a hackathon repo"
+        verdict_detail = f"Only {votes}/3 methods flagged this as hackathon"
+
+    st.markdown(
+        f"""
+    <div style='padding:20px; background:{verdict_bg}; border-radius:12px;
+         border:2px solid {verdict_border}; text-align:center; margin-bottom:1rem;'>
+        <h2 style='margin:0; color:{verdict_color}; font-size:2rem;'>{verdict_text}</h2>
+        <p style='margin:8px 0 0 0; color:#64748b;'>{verdict_detail}</p>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    # Method-by-method results
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        _render_method_card(
+            "1. Simple Keyword Rules",
+            naive["flag"],
+            f"Score: {naive['score']}",
+            naive["signals"].replace("|", ", "),
+            "#e8a838",
+            "#fef9ee",
+            "#fdf3dc",
+        )
+
+    with col2:
+        _render_method_card(
+            "2. Statistical Weighting",
+            corr["flag"],
+            f"Score: {corr['score']:.2f}",
+            "Threshold: 0.5",
+            SDSC_BLUE,
+            "#eef0f8",
+            "#e1e4f0",
+        )
+
+    with col3:
+        _render_method_card(
+            "3. Random Forest",
+            rf["flag"],
+            f"Probability: {rf['probability']:.2f}",
+            "Threshold: 0.5",
+            SDSC_GREEN,
+            "#f3f7ea",
+            "#e6edcc",
+        )
+
+    # Signal breakdown
+    if naive["signals"] and naive["signals"] != "no_signal":
+        st.markdown("---")
+        st.subheader("Signal Breakdown")
+        st.caption("Which rule-based signals fired for this repository:")
+        for signal in naive["signals"].split("|"):
+            signal_display = signal.replace("_", " ").title()
+            st.markdown(f"- **{signal_display}**")
+
+
+def _render_method_card(
+    title: str,
+    flag: bool,
+    score_text: str,
+    detail: str,
+    accent_color: str,
+    bg_start: str,
+    bg_end: str,
+):
+    """Render a single method result card."""
+    label = "HACKATHON" if flag else "Not hackathon"
+    label_color = SDSC_GREEN if flag else SDSC_BLUE
+    st.markdown(
+        f"""
+    <div style='padding:16px; background:linear-gradient(135deg, {bg_start}, {bg_end});
+         border-radius:12px; border-left:4px solid {accent_color}; height:160px;'>
+        <h4 style='margin:0 0 8px 0; color:#26235c; font-size:0.95rem;'>{title}</h4>
+        <p style='margin:0; color:{label_color}; font-weight:700; font-size:1.3rem;'>{label}</p>
+        <p style='margin:4px 0 0 0; color:#475569; font-size:0.9rem;'>{score_text}</p>
+        <p style='margin:2px 0 0 0; color:#94a3b8; font-size:0.8rem;'>{detail}</p>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main App Router
 # ---------------------------------------------------------------------------
 
@@ -1821,6 +1985,7 @@ def main():
                 "3. Three Prediction Methods",
                 "4. The Verdict",
                 "5. What We Learned",
+                "6. Try It Yourself",
             ],
         )
 
