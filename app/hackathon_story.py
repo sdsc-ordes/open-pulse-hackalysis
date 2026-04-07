@@ -1815,6 +1815,7 @@ def render_predict():
     repo_url = st.text_input(
         "GitHub Repository URL",
         placeholder="https://github.com/owner/repo",
+        key="predict_url",
     )
 
     enrich_concepts = st.checkbox(
@@ -1827,29 +1828,32 @@ def render_predict():
 
     predict_clicked = st.button("Predict", type="primary", use_container_width=True)
 
-    if not predict_clicked:
-        st.info("Enter a GitHub repository URL above, choose your options, then click **Predict**.")
-        return
+    if predict_clicked:
+        if not repo_url or not repo_url.strip():
+            st.error("Please enter a GitHub URL first.")
+            return
+        if "github.com" not in repo_url:
+            st.error("Please enter a valid GitHub URL (e.g. https://github.com/owner/repo)")
+            return
 
-    if not repo_url or not repo_url.strip():
-        st.error("Please enter a GitHub URL first.")
-        return
-
-    if "github.com" not in repo_url:
-        st.error("Please enter a valid GitHub URL (e.g. https://github.com/owner/repo)")
-        return
-
-    try:
         spinner_text = "Fetching repository metadata from GitHub"
         if enrich_concepts:
             spinner_text += " and EPFL concepts"
         spinner_text += "..."
-        with st.spinner(spinner_text):
-            from hackathon_analysis.prediction.pipeline import predict_repo
-            result = predict_repo(repo_url.strip(), enrich_concepts=enrich_concepts)
-    except Exception as e:
-        st.error(f"Failed to fetch repository: {e}")
+        try:
+            with st.spinner(spinner_text):
+                from hackathon_analysis.prediction.pipeline import predict_repo
+                result = predict_repo(repo_url.strip(), enrich_concepts=enrich_concepts)
+            st.session_state["predict_result"] = result
+        except Exception as e:
+            st.error(f"Failed to fetch repository: {e}")
+            return
+
+    # Show results if we have them (persists across rerenders)
+    if "predict_result" not in st.session_state:
         return
+
+    result = st.session_state["predict_result"]
 
     meta = result["metadata"]
     naive = result["naive_rule_based"]
