@@ -5,7 +5,7 @@ authors = [
 ]
 description = "Analyse performance of open source and hackathon repositories"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.14"
 version = "0.1.0"
 
 dependencies = [
@@ -19,6 +19,8 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "pyarrow>=15.0.0",
     "datasets>=2.14.0",
+    "graphai-client>=1.16.0",
+    "matplotlib>=3.7.0",
 ]
 [dependency-groups]
 dev = [

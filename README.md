@@ -52,6 +52,22 @@ or
 just hackalysis -o ./data -p devpost -n "ExampleHackathonName"
 ```
 
+Extract GitHub metadata for repos referenced by an extracted hackathon dataset:
+
+```bash
+uv run hackalysis github-extract -o ./data -p lauzhack -y 2023
+```
+
+Extract GitHub metadata directly from a GitHub organization or user account:
+
+```bash
+uv run hackalysis github-extract-account -o ./data -a openai --no-upload
+```
+
+This writes outputs under `./data/github-account-openai/` and produces both:
+- `github_account_github_repo_metadata.{json,parquet}`
+- `github_account_github_project_metadata.{json,parquet}`
+
 ## Development
 
 Read first the [Contribution Guidelines](/CONTRIBUTING.md).

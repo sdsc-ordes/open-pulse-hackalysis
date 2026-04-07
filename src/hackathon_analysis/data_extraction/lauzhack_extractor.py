@@ -1,8 +1,9 @@
 """LauzHack data extraction helper functions."""
 
+import hashlib
 import json
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -11,10 +12,29 @@ import requests
 import typer
 from bs4 import BeautifulSoup
 
+from hackathon_analysis.data_extraction.models import (
+    LauzHackMetadata,
+    LauzHackProject,
+)
+
 # Constants
 DEFAULT_LOCATION = "EPFL, Lausanne, Switzerland"
 BASE_URL = "https://lauzhack.com"
 MIN_CONTENT_DIV_LENGTH = 20  # Minimum characters for content div to be considered
+MONTH_NAME_TO_NUM = {
+    "january": 1,
+    "february": 2,
+    "march": 3,
+    "april": 4,
+    "may": 5,
+    "june": 6,
+    "july": 7,
+    "august": 8,
+    "september": 9,
+    "october": 10,
+    "november": 11,
+    "december": 12,
+}
 
 
 def _normalize_title(title: Optional[str]) -> str:
@@ -86,6 +106,30 @@ def _build_dedup_key(
             team_key,
         ]
     )
+
+
+def _build_project_merge_key(title: str, description: str, url: str) -> str:
+    """Build a merge key for the same project regardless of team split."""
+    return "|".join(
+        [
+            _normalize_title(title),
+            _normalize_title(description),
+            url.strip().lower(),
+        ]
+    )
+
+
+def _build_project_hard_id(project: Dict[str, Any], fallback_idx: Optional[int] = None) -> str:
+    """Build deterministic project id from extracted content."""
+    title = str(project.get("title", "") or "")
+    description = str(project.get("description", "") or "")
+    url = str(project.get("url", "") or "")
+    team = project.get("team", []) or []
+    dedupe_key = _build_dedup_key(title, description, url, team)
+    if fallback_idx is not None:
+        dedupe_key = f"{dedupe_key}|idx:{fallback_idx}"
+    digest = hashlib.sha1(dedupe_key.encode("utf-8")).hexdigest()[:16]  # noqa: S324
+    return f"lhp_{digest}"
 
 
 def _parse_projects_from_elements(
@@ -507,7 +551,10 @@ def extract_project_info(
         if img_elem and img_elem.get("src"):
             project["image_url"] = img_elem["src"]
 
-    return project if "title" in project else None
+    if "title" in project:
+        project["project_hard_id"] = _build_project_hard_id(project, fallback_idx=idx)
+        return project
+    return None
 
 
 def _extract_social_links(soup: BeautifulSoup) -> Dict[str, str]:
@@ -539,6 +586,47 @@ def _extract_social_links(soup: BeautifulSoup) -> Dict[str, str]:
                     break
 
     return social_links
+
+
+def _extract_event_date_text(soup: BeautifulSoup) -> Optional[str]:
+    """Extract a human-readable event date range from the page text."""
+    txt = soup.get_text(" ", strip=True)
+    pattern = re.compile(
+        r"(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}\s*(?:-|–)\s*(?:(January|February|March|April|May|June|July|August|September|October|November|December)\s+)?\d{1,2}",
+        re.IGNORECASE,
+    )
+    match = pattern.search(txt)
+    return match.group(0).strip() if match else None
+
+
+def _parse_event_date_range(event_date_text: str, default_year: int) -> Optional[tuple[date, date]]:
+    """Parse ranges like 'November 30 - December 1' or 'December 2-3'."""
+    pattern = re.compile(
+        r"^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2})\s*(?:-|–)\s*(?:(January|February|March|April|May|June|July|August|September|October|November|December)\s+)?(\d{1,2})$",
+        re.IGNORECASE,
+    )
+    match = pattern.match(event_date_text.strip())
+    if not match:
+        return None
+
+    start_month_name, start_day_s, end_month_name, end_day_s = match.groups()
+    start_month = MONTH_NAME_TO_NUM[start_month_name.lower()]
+    end_month = MONTH_NAME_TO_NUM[end_month_name.lower()] if end_month_name else start_month
+    start_day = int(start_day_s)
+    end_day = int(end_day_s)
+
+    start_year = default_year
+    end_year = default_year
+    if end_month < start_month:
+        end_year = default_year + 1
+
+    try:
+        start_date = date(start_year, start_month, start_day)
+        end_date = date(end_year, end_month, end_day)
+    except ValueError:
+        return None
+
+    return (start_date, end_date)
 
 
 def fetch_metadata(metadata_url: str) -> Dict[str, Any]:
@@ -574,6 +662,10 @@ def fetch_metadata(metadata_url: str) -> Dict[str, Any]:
     # Set hackathon name
     metadata["name"] = f"LauzHack {metadata.get('year', '')}"
 
+    event_date_text = _extract_event_date_text(soup)
+    if event_date_text:
+        metadata["date"] = event_date_text
+
     # Extract description
     desc_elem = (
         soup.find("meta", attrs={"name": "description"})
@@ -590,6 +682,14 @@ def fetch_metadata(metadata_url: str) -> Dict[str, Any]:
     date_elem = soup.find(class_="date") or soup.find(class_="event-date")
     if date_elem:
         metadata["date"] = date_elem.get_text(strip=True)
+
+    year_val = metadata.get("year")
+    if isinstance(year_val, int):
+        date_range = _parse_event_date_range(metadata.get("date", ""), year_val)
+        if date_range:
+            start_date, end_date = date_range
+            metadata["date_start"] = start_date.isoformat()
+            metadata["date_end"] = end_date.isoformat()
 
     # Extract location
     location_elem = soup.find(class_="location") or soup.find(
@@ -638,27 +738,43 @@ def process_project_data(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     """
     typer.echo(f"      → Processing {len(projects)} projects")
 
-    processed_projects = []
-    seen_keys = set()
+    processed_projects: List[Dict[str, Any]] = []
+    merged_by_key: Dict[str, Dict[str, Any]] = {}
+
+    def _merge_unique_strings(existing: List[str], new_values: List[str]) -> List[str]:
+        merged: List[str] = []
+        seen: set[str] = set()
+        for value in [*(existing or []), *(new_values or [])]:
+            text = str(value).strip()
+            if not text:
+                continue
+            norm = text.lower()
+            if norm in seen:
+                continue
+            seen.add(norm)
+            merged.append(text)
+        return merged
 
     for project in projects:
-        # Remove duplicates based on multiple fields
         title = project.get("title", "")
         description = project.get("description", "")
         url = project.get("url", "")
         team = project.get("team", []) or []
-        dedupe_key = _build_dedup_key(title, description, url, team)
+        merge_key = _build_project_merge_key(title, description, url)
 
-        if dedupe_key:
-            if dedupe_key in seen_keys:
-                continue
-            seen_keys.add(dedupe_key)
+        if merge_key and merge_key in merged_by_key:
+            existing_project = merged_by_key[merge_key]
+            existing_project["team"] = _merge_unique_strings(existing_project.get("team", []), team)
+            existing_project["tags"] = _merge_unique_strings(existing_project.get("tags", []), project.get("tags", []) or [])
+            existing_project["awards"] = _merge_unique_strings(existing_project.get("awards", []), project.get("awards", []) or [])
+            existing_project["categories"] = _merge_unique_strings(existing_project.get("categories", []), project.get("categories", []) or [])
+            if not existing_project.get("image_url") and project.get("image_url"):
+                existing_project["image_url"] = project.get("image_url", "")
+            continue
 
-        # Clean and validate data
         processed_project = {
             "id": project.get("id"),
             "title": title or "Untitled Project",
-            # Limit length
             "description": project.get("description", "")[:500],
             "url": project.get("url", ""),
             "team": project.get("team", []),
@@ -668,12 +784,27 @@ def process_project_data(projects: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             "categories": project.get("categories", []),
         }
 
-        # Remove empty fields
+        validated = LauzHackProject.model_validate(
+            {
+                **processed_project,
+                "project_hard_id": project.get("project_hard_id")
+                or _build_project_hard_id(
+                    {
+                        **processed_project,
+                        "team": sorted(_merge_unique_strings([], processed_project.get("team", []))),
+                    }
+                ),
+            }
+        ).model_dump(
+            mode="json",
+            exclude_none=True,
+        )
         processed_project = {
-            k: v for k, v in processed_project.items() if v or v == 0
+            k: v for k, v in validated.items() if v or v == 0
         }
-
         processed_projects.append(processed_project)
+        if merge_key:
+            merged_by_key[merge_key] = processed_project
 
     return processed_projects
 
@@ -690,21 +821,14 @@ def process_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     """
     typer.echo("      → Processing metadata")
 
-    # Add timestamp
-    metadata["extracted_at"] = datetime.now().isoformat()
+    metadata_payload = dict(metadata)
+    metadata_payload["extracted_at"] = datetime.now().isoformat()
 
-    # Ensure required fields exist
-    if "name" not in metadata:
-        metadata["name"] = "LauzHack"
+    if "description" in metadata_payload:
+        metadata_payload["description"] = metadata_payload["description"][:1000]
 
-    if "location" not in metadata:
-        metadata["location"] = "EPFL, Lausanne, Switzerland"
-
-    # Clean description
-    if "description" in metadata:
-        metadata["description"] = metadata["description"][:1000]
-
-    return metadata
+    validated = LauzHackMetadata.model_validate(metadata_payload)
+    return validated.model_dump(mode="json", exclude_none=True)
 
 
 def merge_project_data(
@@ -730,7 +854,11 @@ def merge_project_data(
             "hackathon_year": metadata.get("year"),
             "hackathon_location": metadata.get("location"),
         }
-        merged_projects.append(merged_project)
+        merged_projects.append(
+            LauzHackProject.model_validate(merged_project).model_dump(
+                mode="json", exclude_none=True
+            )
+        )
 
     return merged_projects
 
