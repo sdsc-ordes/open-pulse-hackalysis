@@ -1812,10 +1812,20 @@ def render_predict():
         unsafe_allow_html=True,
     )
 
-    repo_url = st.text_input(
-        "GitHub Repository URL",
-        placeholder="https://github.com/owner/repo",
-    )
+    url_col, opt_col = st.columns([3, 1])
+    with url_col:
+        repo_url = st.text_input(
+            "GitHub Repository URL",
+            placeholder="https://github.com/owner/repo",
+        )
+    with opt_col:
+        enrich_concepts = st.checkbox(
+            "Enrich with EPFL concepts",
+            value=False,
+            help="Call the EPFL Graph API to extract semantic topics. "
+                 "Requires EPFL credentials in your .env file. "
+                 "If unavailable, prediction runs without concepts.",
+        )
 
     if not repo_url:
         st.info("Enter a GitHub repository URL above and press Enter.")
@@ -1827,9 +1837,13 @@ def render_predict():
         return
 
     try:
-        with st.spinner("Fetching repository metadata from GitHub..."):
+        spinner_text = "Fetching repository metadata from GitHub"
+        if enrich_concepts:
+            spinner_text += " and EPFL concepts"
+        spinner_text += "..."
+        with st.spinner(spinner_text):
             from hackathon_analysis.prediction.pipeline import predict_repo
-            result = predict_repo(repo_url)
+            result = predict_repo(repo_url, enrich_concepts=enrich_concepts)
     except Exception as e:
         st.error(f"Failed to fetch repository: {e}")
         return
@@ -1854,7 +1868,8 @@ def render_predict():
             Commits: <b>{meta.get('commits', 0):,}</b> &nbsp;|&nbsp;
             Contributors: <b>{meta.get('contributors', 0)}</b> &nbsp;|&nbsp;
             Active days: <b>{meta.get('active_days', 0)}</b> &nbsp;|&nbsp;
-            Repo age: <b>{meta.get('repo_age_days', 0):,} days</b>
+            Repo age: <b>{meta.get('repo_age_days', 0):,} days</b> &nbsp;|&nbsp;
+            Topics: <b>{meta.get('n_concepts', 0)}</b>
         </p>
     </div>
     """,
@@ -1886,6 +1901,16 @@ def render_predict():
     """,
         unsafe_allow_html=True,
     )
+
+    # Concept enrichment notice
+    concepts_error = meta.get("concepts_error")
+    n_concepts = meta.get("n_concepts", 0)
+    if n_concepts > 0:
+        st.caption(f"🏷️ Enriched with {n_concepts} EPFL concepts")
+    elif enrich_concepts and concepts_error and concepts_error != "not_attempted":
+        st.caption(f"🏷️ Concept enrichment attempted but failed: {concepts_error}")
+    elif not enrich_concepts:
+        st.caption("🏷️ Concept enrichment skipped — check the box above to enable")
 
     # Method-by-method results
     col1, col2, col3 = st.columns(3)
