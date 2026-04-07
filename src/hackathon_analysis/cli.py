@@ -242,6 +242,67 @@ def github_extract_account( # noqa: PLR0913 because we want to keep all these pa
     typer.echo("✓ GitHub account extraction complete!")
 
 
+@app.command()
+def predict(
+    repo_url: Annotated[
+        str,
+        typer.Argument(help="GitHub repository URL to classify"),
+    ],
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output raw JSON instead of human-readable text"),
+    ] = False,
+):
+    """Predict whether a GitHub repo is a hackathon project."""
+    import json as json_mod
+
+    from hackathon_analysis.prediction.pipeline import (
+        predict_repo,
+        predict_repo_pretty,
+    )
+
+    gh_token = _get_github_token()
+
+    try:
+        if json_output:
+            result = predict_repo(repo_url, github_token=gh_token)
+            typer.echo(json_mod.dumps(result, indent=2))
+        else:
+            output = predict_repo_pretty(repo_url, github_token=gh_token)
+            typer.echo(output)
+    except Exception as e:
+        typer.echo(f"Error: {e}", err=True)
+        raise typer.Exit(code=1) from None
+
+
+@app.command(name="train-model")
+def train_model_cmd(
+    data_path: Annotated[
+        Optional[Path],
+        typer.Option("--data", "-d", help="Path to labeled CSV. Defaults to DATA_ROOT/repo_metadata_with_predictions.csv"),
+    ] = None,
+):
+    """Train prediction models on labeled data and save artifacts."""
+    from hackathon_analysis.prediction.train_model import train_and_save
+
+    load_dotenv()
+
+    if data_path is None:
+        data_root = os.getenv("DATA_ROOT")
+        if not data_root:
+            typer.echo("Error: DATA_ROOT not set and no --data path provided", err=True)
+            raise typer.Exit(code=1)
+        data_path = Path(data_root) / "repo_metadata_with_predictions.csv"
+
+    if not data_path.exists():
+        typer.echo(f"Error: Data file not found: {data_path}", err=True)
+        raise typer.Exit(code=1)
+
+    metadata = train_and_save(data_path)
+    typer.echo(f"Trained on {metadata['valid_repos']} repos with {metadata['n_features']} features")
+    typer.echo(f"Cross-validated accuracy: {metadata['cv_accuracy']:.1%}")
+
+
 if __name__ == "__main__":
     load_dotenv()
     app()
