@@ -188,6 +188,8 @@ def predict_repo(
             "active_days": int(row.get("active_days_default_branch", 0) or 0),
             "repo_age_days": int(row.get("repo_age_days", 0) or 0),
             "has_valid_metadata": bool(row.get("has_valid_metadata", False)),
+            "n_concepts": int(row.get("n_concepts", 0)),
+            "concepts_error": row.get("repo_concepts_error"),
         },
     }
 
