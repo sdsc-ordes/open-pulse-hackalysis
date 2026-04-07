@@ -1812,26 +1812,29 @@ def render_predict():
         unsafe_allow_html=True,
     )
 
-    url_col, opt_col = st.columns([3, 1])
-    with url_col:
-        repo_url = st.text_input(
-            "GitHub Repository URL",
-            placeholder="https://github.com/owner/repo",
-        )
-    with opt_col:
-        enrich_concepts = st.checkbox(
-            "Enrich with EPFL concepts",
-            value=False,
-            help="Call the EPFL Graph API to extract semantic topics. "
-                 "Requires EPFL credentials in your .env file. "
-                 "If unavailable, prediction runs without concepts.",
-        )
+    repo_url = st.text_input(
+        "GitHub Repository URL",
+        placeholder="https://github.com/owner/repo",
+    )
 
-    if not repo_url:
-        st.info("Enter a GitHub repository URL above and press Enter.")
+    enrich_concepts = st.checkbox(
+        "Enrich with EPFL concepts",
+        value=False,
+        help="Call the EPFL Graph API to extract semantic topics. "
+             "Requires EPFL credentials in your .env file. "
+             "If unavailable, prediction runs without concepts.",
+    )
+
+    predict_clicked = st.button("Predict", type="primary", use_container_width=True)
+
+    if not predict_clicked:
+        st.info("Enter a GitHub repository URL above, choose your options, then click **Predict**.")
         return
 
-    # Validate URL format
+    if not repo_url or not repo_url.strip():
+        st.error("Please enter a GitHub URL first.")
+        return
+
     if "github.com" not in repo_url:
         st.error("Please enter a valid GitHub URL (e.g. https://github.com/owner/repo)")
         return
@@ -1843,7 +1846,7 @@ def render_predict():
         spinner_text += "..."
         with st.spinner(spinner_text):
             from hackathon_analysis.prediction.pipeline import predict_repo
-            result = predict_repo(repo_url, enrich_concepts=enrich_concepts)
+            result = predict_repo(repo_url.strip(), enrich_concepts=enrich_concepts)
     except Exception as e:
         st.error(f"Failed to fetch repository: {e}")
         return
