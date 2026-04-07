@@ -33,3 +33,13 @@ __pycache*
 .prettierrc.yaml
 .yamllint.yaml
 .typos.toml
+
+*.png
+*.jpg
+*.jpeg
+
+*.DS_Store
+*.log
+*.tmp
+
+.claude/
