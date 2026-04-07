@@ -68,6 +68,7 @@ tests/                   # pytest test suite
 
 - **Do not modify notebooks** — extract reusable code into Python modules instead
 - **Do not hardcode absolute paths** — use the `DATA_ROOT` environment variable
+- **Do not create `requirements.txt` or `requirements_*.txt`** — this project uses `uv` with `pyproject.toml` for dependency management. Add new dependencies there.
 - **Do not commit credentials** — `.env` files are gitignored
 - **Do not add `StandardScaler` before Random Forest** — tree models don't need feature scaling
 - **Do not add concept one-hot features to ML models** — they're too specific to one hackathon and don't generalize
