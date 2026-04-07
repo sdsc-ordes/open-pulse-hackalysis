@@ -2017,6 +2017,8 @@ def main():
         render_verdict(df)
     elif section.startswith("5"):
         render_conclusions(df)
+    elif section.startswith("6"):
+        render_predict()
 
 
 if __name__ == "__main__":
