@@ -1836,14 +1836,78 @@ def render_predict():
             st.error("Please enter a valid GitHub URL (e.g. https://github.com/owner/repo)")
             return
 
-        spinner_text = "Fetching repository metadata from GitHub"
-        if enrich_concepts:
-            spinner_text += " and EPFL concepts"
-        spinner_text += "..."
         try:
-            with st.spinner(spinner_text):
-                from hackathon_analysis.prediction.pipeline import predict_repo
-                result = predict_repo(repo_url.strip(), enrich_concepts=enrich_concepts)
+            from hackathon_analysis.prediction.pipeline import (
+                fetch_single_repo_metadata,
+                _load_correlation_weights,
+                _load_rf_model,
+            )
+            from hackathon_analysis.prediction.feature_engineering import build_repo_analysis_features
+            from hackathon_analysis.prediction.naive_rules import predict_naive
+            from hackathon_analysis.prediction.correlation_weighted import predict_correlation_weighted
+            from hackathon_analysis.prediction.random_forest import predict_random_forest
+            from hackathon_analysis.prediction.concepts import try_enrich_with_concepts
+
+            status = st.status("Running prediction pipeline...", expanded=True)
+
+            status.update(label="Step 1/5: Fetching GitHub metadata...")
+            raw_df = fetch_single_repo_metadata(repo_url.strip())
+
+            if enrich_concepts:
+                status.update(label="Step 2/5: Enriching with EPFL concepts...")
+                row_dict = raw_df.iloc[0].to_dict()
+                concept_result = try_enrich_with_concepts(row_dict)
+                raw_df["n_concepts"] = concept_result["n_concepts"]
+                raw_df["repo_concept_names"] = [concept_result["repo_concept_names"]]
+                raw_df["repo_top_concept"] = concept_result["repo_top_concept"]
+                raw_df["repo_concepts_error"] = concept_result["repo_concepts_error"]
+
+            status.update(label="Step 3/5: Computing features...")
+            df = build_repo_analysis_features(raw_df)
+
+            status.update(label="Step 4/5: Running rule-based & correlation predictions...")
+            df = predict_naive(df)
+            corr_weights = _load_correlation_weights()
+            df = predict_correlation_weighted(df, corr_weights)
+
+            status.update(label="Step 5/5: Running Random Forest prediction...")
+            rf_model = _load_rf_model()
+            df = predict_random_forest(df, rf_model)
+
+            # Build result dict
+            row = df.iloc[0]
+            result = {
+                "repo_url": repo_url.strip(),
+                "naive_rule_based": {
+                    "flag": bool(row.get("repo_predicted_flag", False)),
+                    "score": int(row.get("repo_predicted_score", 0)),
+                    "signals": str(row.get("repo_predicted_signals", "")),
+                },
+                "correlation_weighted": {
+                    "flag": bool(row.get("corr_weighted_flag", False)),
+                    "score": round(float(row.get("corr_weighted_score", 0)), 4),
+                },
+                "random_forest": {
+                    "flag": bool(row.get("ml_predicted_flag", 0)),
+                    "probability": round(float(row.get("ml_predicted_proba", 0)), 4),
+                },
+                "metadata": {
+                    "owner": row.get("owner", ""),
+                    "repo": row.get("repo", ""),
+                    "language": row.get("primary_language", ""),
+                    "stars": int(row.get("stars", 0)),
+                    "forks": int(row.get("forks", 0)),
+                    "commits": int(row.get("commit_count_default_branch", 0)),
+                    "contributors": int(row.get("contributors_count", 0)),
+                    "active_days": int(row.get("active_days_default_branch", 0) or 0),
+                    "repo_age_days": int(row.get("repo_age_days", 0) or 0),
+                    "has_valid_metadata": bool(row.get("has_valid_metadata", False)),
+                    "n_concepts": int(row.get("n_concepts", 0)),
+                    "concepts_error": row.get("repo_concepts_error"),
+                },
+            }
+
+            status.update(label="Prediction complete!", state="complete", expanded=False)
             st.session_state["predict_result"] = result
         except Exception as e:
             st.error(f"Failed to fetch repository: {e}")
