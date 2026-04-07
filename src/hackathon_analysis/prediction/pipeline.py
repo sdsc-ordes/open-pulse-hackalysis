@@ -118,6 +118,7 @@ def predict_repo(
     repo_url: str,
     github_token: str | None = None,
     models_dir: Path = MODELS_DIR,
+    enrich_concepts: bool = True,
 ) -> dict:
     """Classify a GitHub repo as hackathon or not using all three methods.
 
@@ -125,12 +126,25 @@ def predict_repo(
         repo_url: full GitHub repo URL (e.g. "https://github.com/user/repo")
         github_token: GitHub API token. If None, reads from GITHUB_TOKEN env var.
         models_dir: directory containing saved model artifacts.
+        enrich_concepts: if True, attempt EPFL concept enrichment (falls back
+            gracefully if credentials are missing or API is unavailable).
 
     Returns:
         dict with predictions from all three methods + repo metadata.
     """
+    from hackathon_analysis.prediction.concepts import try_enrich_with_concepts
+
     # Step 1: Fetch metadata from GitHub API
     raw_df = fetch_single_repo_metadata(repo_url, github_token)
+
+    # Step 1b: Optional concept enrichment
+    if enrich_concepts:
+        row_dict = raw_df.iloc[0].to_dict()
+        concept_result = try_enrich_with_concepts(row_dict)
+        raw_df["n_concepts"] = concept_result["n_concepts"]
+        raw_df["repo_concept_names"] = [concept_result["repo_concept_names"]]
+        raw_df["repo_top_concept"] = concept_result["repo_top_concept"]
+        raw_df["repo_concepts_error"] = concept_result["repo_concepts_error"]
 
     # Step 2: Compute derived features
     df = build_repo_analysis_features(raw_df)
