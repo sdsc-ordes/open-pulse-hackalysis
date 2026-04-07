@@ -98,10 +98,10 @@ def build_repo_analysis_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def _count_list_items(val) -> int:
     """Count items in a value that might be a list, JSON string, or scalar."""
-    if pd.isna(val) or val == "":
-        return 0
     if isinstance(val, list):
         return len(val)
+    if pd.isna(val) or val == "":
+        return 0
     if isinstance(val, str):
         try:
             parsed = json.loads(val)
