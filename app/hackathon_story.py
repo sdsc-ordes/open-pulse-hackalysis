@@ -177,6 +177,20 @@ st.markdown(
 
 
 @st.cache_data
+def load_project_metadata() -> dict:
+    """Load project metadata for all years to map project IDs to years."""
+    project_year_map = {}
+    for year in [2023, 2024, 2025]:
+        year_dir = DATA_ROOT / f"lauzhack-{year}"
+        projects_file = year_dir / "lauzhack_projects.parquet"
+        if projects_file.exists():
+            proj_df = pd.read_parquet(projects_file)
+            for _, row in proj_df.iterrows():
+                project_year_map[row["project_hard_id"]] = str(row["hackathon_year"])
+    return project_year_map
+
+
+@st.cache_data
 def load_predictions() -> pd.DataFrame:
     df = pd.read_csv(DATA_ROOT / "repo_metadata_with_predictions.csv")
 
@@ -185,29 +199,34 @@ def load_predictions() -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].apply(_safe_parse_list)
 
-    # Derive source from per-year metadata JSONs and account directories
-    source_map = {}
-    for year in [2023, 2024, 2025]:
-        meta_path = DATA_ROOT / f"lauzhack-{year}" / "lauzhack_github_repo_metadata.json"
-        if meta_path.exists():
-            with open(meta_path) as f:
-                urls = list(json.load(f).keys())
-            for url in urls:
-                source_map[url] = str(year)
+    # Load project metadata for mapping deleted repos to years
+    project_year_map = load_project_metadata()
 
-    # Map account repos to their source account
-    account_dirs = [d for d in DATA_ROOT.iterdir() if d.is_dir() and d.name.startswith("github-account-")]
-    for account_dir in account_dirs:
-        account_name = account_dir.name.replace("github-account-", "")
-        meta_files = list(account_dir.glob("*_repo_metadata.json")) + list(account_dir.glob("*_github_repo_metadata.json"))
-        for meta_file in meta_files:
-            with open(meta_file) as f:
-                urls = list(json.load(f).keys())
-            for url in urls:
-                source_map[url] = f"Account: {account_name}"
+    # Derive source from the data itself (no external JSON file lookup needed)
+    # Hackathon repos (have a project_foreign_key) → use created_at year or project metadata
+    # Account repos (no project link) → group by owner
+    created_year = pd.to_datetime(df["created_at"], errors="coerce").dt.year
+    has_project = df["project_foreign_key"].fillna("").astype(str).str.strip().ne("")
 
-    df["year"] = df["repo_url"].map(source_map).fillna("Unknown Source")
-    # Keep a simplified column for backward compat
+    df["year"] = "Unknown Source"
+
+    # For hackathon repos: use created_at year if available, otherwise look up from project metadata
+    for idx in df[has_project].index:
+        year_val = created_year[idx]
+        if pd.notna(year_val):
+            df.loc[idx, "year"] = str(int(year_val))
+        else:
+            # Try to get year from project metadata
+            proj_fk = df.loc[idx, "project_foreign_key"]
+            if pd.notna(proj_fk) and str(proj_fk).strip() in project_year_map:
+                df.loc[idx, "year"] = project_year_map[str(proj_fk).strip()]
+            else:
+                df.loc[idx, "year"] = "Unknown Project Year"
+
+    # For non-hackathon repos: group by owner
+    df.loc[~has_project, "year"] = df.loc[~has_project, "owner"].apply(
+        lambda o: f"Account: {o}" if pd.notna(o) and str(o).strip() else "Unknown Source"
+    )
     df["is_hackathon_year"] = df["year"].str.match(r"^\d{4}$")
 
     # Prediction agreement
@@ -560,10 +579,10 @@ def render_introduction(df: pd.DataFrame):
     valid = df[df["has_valid_metadata"]]
     n_projects = df["project_foreign_key"].dropna().nunique()
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Hackathon Projects", f"{n_projects}", help="Unique hackathon projects in our case study dataset")
-    c2.metric("GitHub Repos", f"{len(df)}", help=f"{len(df)} total linked repositories, {len(valid)} with complete GitHub metadata")
-    hackathon_years = sorted(y for y in df["year"].unique() if y.isdigit())
-    c3.metric("Years Analyzed", str(len(hackathon_years)), help=f"{', '.join(hackathon_years)} editions (case study: LauzHack)")
+    c1.metric("GitHub Repos", f"{len(df)}", help=f"{len(df)} total linked repositories, {len(valid)} with complete GitHub metadata")
+    data_quality = (len(valid) / len(df) * 100) if len(df) > 0 else 0
+    c2.metric("Data Completeness", f"{len(valid)}", help=f"{data_quality:.1f}% of repositories have valid GitHub metadata")
+    c3.metric("Unique Lauzhack Projects", f"{n_projects}", help="Unique hackathon projects (one project can link to multiple repos)")
     unique_concepts = df["concept_list"].explode().nunique()
     c4.metric(
         "Topic Tags",
@@ -577,27 +596,30 @@ def render_introduction(df: pd.DataFrame):
     # Data quality + label breakdown — two separate concerns
     total = len(df)
     with_metadata = int(df["has_valid_metadata"].sum())
-    with_concepts = int((df["n_concepts"] > 0).sum())
     linked = int(df["is_linked_project"].sum())
     true_hack = int(df["true_hackathon_repos"].sum())
 
     dq_col, label_col = st.columns(2)
 
     with dq_col:
-        st.subheader("Data Quality Pipeline")
+        st.subheader("Data Pipeline")
         st.caption(
-            "Each stage filters the previous one. Repos need complete GitHub metadata "
-            "before we can extract features, and topic tags require metadata first."
+            "From raw collection to usable data. Some repos were deleted or private "
+            "and couldn't be fetched. Of those with valid metadata, a subset were "
+            "confirmed as actual hackathon code."
         )
 
+        true_hack_with_metadata = int(
+            (df["true_hackathon_repos"] & df["has_valid_metadata"]).sum()
+        )
         pipeline_data = pd.DataFrame(
             {
                 "Stage": [
                     "All Repositories Collected",
-                    "Have Complete GitHub Metadata",
-                    "Have Topic Tags",
+                    "Have Valid GitHub Metadata",
+                    "Confirmed Hackathon (with metadata)",
                 ],
-                "Count": [total, with_metadata, with_concepts],
+                "Count": [total, with_metadata, true_hack_with_metadata],
             }
         )
 
@@ -655,74 +677,104 @@ def render_introduction(df: pd.DataFrame):
         fig_labels.update_traces(textposition="outside", textfont_size=14)
         st.plotly_chart(fig_labels, use_container_width=True)
 
-    # Year breakdown + Language treemap side by side
-    col_left, col_right = st.columns(2)
+    # LauzHack projects vs repositories
+    st.markdown("### LauzHack Repositories by Year")
 
-    with col_left:
-        st.subheader("Repositories by Source")
-        st.caption(
-            "Bars show where each repository came from. LauzHack editions are the hackathon data; "
-            "personal/org account repos serve as non-hackathon examples for comparison."
-        )
-        year_counts = df["year"].value_counts().reset_index()
-        year_counts.columns = ["Source", "Repos"]
-        year_counts = year_counts.sort_values("Source")
+    # Projects summary stats
+    years_to_show = ["2023", "2024", "2025"]
+    project_counts = {}
+    for year in years_to_show:
+        project_counts[year] = df[df["year"] == year]["project_foreign_key"].dropna().nunique()
 
-        # Build color map: hackathon years in brand colors, accounts in warm tones
-        account_colors = ["#e8a838", "#d97706", "#b45309"]
-        account_sources = sorted([s for s in year_counts["Source"] if s.startswith("Account:")])
-        color_map = {
-            "2023": SDSC_GREEN,
-            "2024": SDSC_BLUE,
-            "2025": SDSC_NAVY,
-        }
-        for i, src in enumerate(account_sources):
-            color_map[src] = account_colors[i % len(account_colors)]
+    total_projects = sum(project_counts.values())
+    total_repos = len(df[df["year"].isin(years_to_show)])
 
-        fig_year = px.bar(
-            year_counts,
-            x="Source",
-            y="Repos",
-            color="Source",
-            color_discrete_map=color_map,
-            text="Repos",
-        )
-        fig_year.update_layout(
-            height=400,
-            showlegend=False,
-            xaxis_title="",
-            yaxis_title="Number of Repositories",
-            xaxis_tickangle=-30,
-        )
-        fig_year.update_traces(textposition="outside")
-        st.plotly_chart(fig_year, use_container_width=True)
+    st.caption(
+        f"**{total_projects} projects** with **{total_repos} repositories** (of 210 total LauzHack projects). "
+        f"Green = accessible repos, Red = deleted/inaccessible."
+    )
 
-    with col_right:
-        st.subheader("Language Landscape")
-        st.caption(
-            "Programming languages used across repositories. Shows whether hackathon projects "
-            "favor different languages (e.g., more Python for quick prototyping)."
-        )
-        lang_df = df.copy()
-        lang_df["primary_language"] = lang_df["primary_language"].fillna("Unknown").replace("", "Unknown")
-        lang_df["label"] = lang_df["true_hackathon_repos"].map({True: "Hackathon", False: "Non-Hackathon"})
+    # Repositories stacked bar
+    repo_data = []
+    for year in years_to_show:
+        year_df = df[df["year"] == year]
+        valid_count = year_df["has_valid_metadata"].sum()
+        inaccessible_count = len(year_df) - valid_count
+        total = len(year_df)
+        repo_data.append({
+            "Year": year,
+            "Valid Metadata": valid_count,
+            "Inaccessible": inaccessible_count,
+            "Total": total
+        })
 
-        lang_counts = (
-            lang_df.groupby(["primary_language", "label"]).size().reset_index(name="count")
-        )
-        top_langs = lang_counts.groupby("primary_language")["count"].sum().nlargest(12).index
-        lang_counts = lang_counts[lang_counts["primary_language"].isin(top_langs)]
+    repo_df = pd.DataFrame(repo_data)
 
-        fig_lang = px.treemap(
-            lang_counts,
-            path=["label", "primary_language"],
-            values="count",
-            color="label",
-            color_discrete_map={"Hackathon": HACKATHON_COLOR, "Non-Hackathon": NON_HACKATHON_COLOR},
+    fig_repos = go.Figure()
+
+    # Add stacked bars
+    fig_repos.add_trace(go.Bar(
+        x=repo_df["Year"],
+        y=repo_df["Valid Metadata"],
+        name="Valid Metadata",
+        marker_color=SDSC_GREEN,
+    ))
+
+    fig_repos.add_trace(go.Bar(
+        x=repo_df["Year"],
+        y=repo_df["Inaccessible"],
+        name="Inaccessible",
+        marker_color=ROSE,
+    ))
+
+    # Add total labels on top of each bar
+    for _, row in repo_df.iterrows():
+        fig_repos.add_annotation(
+            x=row["Year"],
+            y=row["Total"],
+            text=f"<b>{int(row['Total'])}</b>",
+            showarrow=False,
+            yshift=12,
+            font=dict(size=11, color="black"),
         )
-        fig_lang.update_layout(height=400, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="white")
-        fig_lang.update_traces(textinfo="label+value", textfont_size=13)
-        st.plotly_chart(fig_lang, use_container_width=True)
+
+    fig_repos.update_layout(
+        barmode="stack",
+        height=380,
+        showlegend=True,
+        xaxis_title="",
+        yaxis_title="Number of Repositories",
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig_repos, use_container_width=True)
+
+    st.markdown("---")
+
+    st.subheader("Language Landscape")
+    st.caption(
+        "Programming languages used across repositories. Shows whether hackathon projects "
+        "favor different languages (e.g., more Python for quick prototyping)."
+    )
+    lang_df = df.copy()
+    lang_df["primary_language"] = lang_df["primary_language"].fillna("Unknown").replace("", "Unknown")
+    lang_df["label"] = lang_df["true_hackathon_repos"].map({True: "Hackathon", False: "Non-Hackathon"})
+
+    lang_counts = (
+        lang_df.groupby(["primary_language", "label"]).size().reset_index(name="count")
+    )
+    top_langs = lang_counts.groupby("primary_language")["count"].sum().nlargest(12).index
+    lang_counts = lang_counts[lang_counts["primary_language"].isin(top_langs)]
+
+    fig_lang = px.treemap(
+        lang_counts,
+        path=["label", "primary_language"],
+        values="count",
+        color="label",
+        color_discrete_map={"Hackathon": HACKATHON_COLOR, "Non-Hackathon": NON_HACKATHON_COLOR},
+    )
+    fig_lang.update_layout(height=450, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="white")
+    fig_lang.update_traces(textinfo="label+value", textfont_size=13)
+    st.plotly_chart(fig_lang, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
