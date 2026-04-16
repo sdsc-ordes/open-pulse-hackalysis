@@ -21,6 +21,7 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 
+from hackathon_analysis.common_utils import upload_to_hugging_face
 from hackathon_analysis.prediction.correlation_weighted import (
     train_correlation_weights,
 )
@@ -133,6 +134,9 @@ def train_and_save(
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
     log.info("Saved metadata to %s", metadata_path)
+
+    # --- Upload models to Hugging Face ---
+    upload_to_hugging_face(models_dir, path_in_repo="models/")
 
     log.info("Training complete! Models saved to %s", models_dir)
     return metadata
