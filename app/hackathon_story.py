@@ -259,32 +259,69 @@ def load_project_metadata() -> dict:
 
 @st.cache_data
 def load_predictions() -> pd.DataFrame:
-    """Load predictions dataset from Hugging Face Hub (with local fallback for testing)."""
+    """Load predictions dataset from Hugging Face Hub (with local fallback for testing).
+
+    Loading priority:
+    1. Local CSV file (fallback, for testing/development)
+    2. Hugging Face Hub (primary)
+
+    Raises:
+        RuntimeError: If data cannot be loaded from either source with helpful guidance.
+    """
+    import logging
     local_csv = DATA_ROOT / "repo_metadata_with_predictions.csv"
 
-    # Local-first fallback: use local file if it exists (useful during testing)
+    # Path 1: Local-first fallback (useful during testing)
     if local_csv.exists():
-        import logging
-        logging.info("Loading predictions from local file (fallback): %s", local_csv)
-        df = pd.read_csv(local_csv)
-    else:
-        # Primary: load from Hugging Face Hub
+        logging.info("📂 Loading predictions from local file: %s", local_csv)
         try:
-            import logging
-            logging.info("Loading predictions from Hugging Face Hub...")
-            repo = get_hf_repo_from_env()
-            hf_dataset = load_huggingface_dataset(
-                repo_id=repo.repo_id,
-                split="train",
-            )
-            df = hf_dataset.to_pandas()
-            logging.info("Successfully loaded %d repos from HF Hub", len(df))
+            df = pd.read_csv(local_csv)
+            logging.info("✓ Loaded %d repos from local CSV", len(df))
+            return df
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to load predictions from Hugging Face Hub: {e}\n"
-                f"HF_REPO_ID: {repo.repo_id}\n"
-                f"Make sure the dataset exists on HF Hub and HF_TOKEN is set if private."
-            ) from e
+            logging.error("Failed to read local CSV: %s", e)
+            raise RuntimeError(f"Failed to read local predictions CSV: {e}") from e
+
+    # Path 2: Hugging Face Hub (primary for production)
+    logging.info("📡 Local file not found, loading from Hugging Face Hub...")
+    try:
+        repo = get_hf_repo_from_env()
+        logging.info("   HF_REPO_ID: %s", repo.repo_id)
+
+        hf_dataset = load_huggingface_dataset(
+            repo_id=repo.repo_id,
+            split="train",
+        )
+        df = hf_dataset.to_pandas()
+        logging.info("✓ Loaded %d repos from Hugging Face Hub", len(df))
+        return df
+
+    except Exception as hf_error:
+        # Provide helpful error message
+        error_msg = (
+            "\n" + "=" * 70 + "\n"
+            "❌ ERROR: Could not load prediction data from either source\n"
+            "=" * 70 + "\n\n"
+            "📍 WHAT HAPPENED:\n"
+            f"  • Local file missing: {local_csv}\n"
+            f"  • HF Hub load failed: {str(hf_error)[:100]}...\n\n"
+            "🔧 HOW TO FIX:\n"
+            "  Option 1 (Recommended): Generate data from notebook\n"
+            "    1. Open: src/hackathon_analysis/data_analysis/repo_analysis.ipynb\n"
+            "    2. Run all cells to generate repo_metadata_with_predictions.csv\n"
+            "    3. This will also upload to HF automatically\n\n"
+            "  Option 2: Download from Hugging Face\n"
+            "    1. Set environment variables in .env:\n"
+            f"       HF_REPO_ID=SDSC/open-pulse-hackathon-data-analysis\n"
+            "       HF_TOKEN=your_hf_token_here\n"
+            "    2. The dashboard will auto-download from HF\n\n"
+            "📝 TECHNICAL DETAILS:\n"
+            f"  • HF_REPO_ID: {get_hf_repo_from_env().repo_id}\n"
+            f"  • Local path: {local_csv}\n"
+            f"  • Error: {hf_error}\n"
+            "=" * 70 + "\n"
+        )
+        raise RuntimeError(error_msg) from hf_error
 
     # Parse stringified lists
     for col in ["concept_list", "repo_concept_names", "concept_project_freq_buckets", "topics"]:
