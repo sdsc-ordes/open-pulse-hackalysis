@@ -901,7 +901,7 @@ def render_features(df: pd.DataFrame):
 
     # Display feature definition and calculation
     feature_info = FEATURE_METADATA[selected_feature_name]
-    with st.expander(f"ℹ️ What is '{selected_feature_name}'?", expanded=True):
+    with st.expander(f"ℹ️ What is '{selected_feature_name}'?"):
         st.markdown(f"**Definition:** {feature_info['definition']}")
         if feature_info["is_derived"]:
             st.markdown(f"📐 **Derived Feature** — {feature_info['calculation']}")
