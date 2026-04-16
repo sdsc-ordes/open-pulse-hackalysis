@@ -54,6 +54,70 @@ METHOD_COLORS = {
     "Random Forest": SDSC_GREEN,        # Brand green
 }
 
+# Feature metadata for dashboard display
+FEATURE_METADATA = {
+    "Days with Code Changes": {
+        "definition": "How many days elapsed between the first and last commit. Hackathon projects typically have short, intense development windows.",
+        "is_derived": True,
+        "calculation": "Calculated as: (last_commit_date − first_commit_date)",
+    },
+    "Repository Age (Days)": {
+        "definition": "How many days the repository has existed. Shows whether a project is brand new or has been around for a while.",
+        "is_derived": True,
+        "calculation": "Calculated as: (pushed_at − created_at)",
+    },
+    "README Length (characters)": {
+        "definition": "Size of the repository's README file. Hackathon repos often have shorter, quick-reference READMEs.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Number of Commits": {
+        "definition": "Total commits on the main branch. Indicates how much development work went into the project.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Repository Stars": {
+        "definition": "Number of GitHub stars (likes) a repository received. Popular projects attract more stars.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Number of Forks": {
+        "definition": "How many times the repository was forked. Shows how many people wanted to build on this project.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Number of Contributors": {
+        "definition": "How many different people contributed code. Hackathons typically involve teams of 2–5 people.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Total Issues": {
+        "definition": "Number of GitHub issues (bug reports, feature requests, discussions) ever opened.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Total Pull Requests": {
+        "definition": "Number of pull requests submitted. Shows collaboration and code review activity.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Total Files": {
+        "definition": "Count of all files in the repository. Larger projects have more files.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Total Directories": {
+        "definition": "Count of folders/directories. Complex projects organize code into more directories.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Watchers": {
+        "definition": "Number of people watching the repository for updates. Similar to stars, shows interest level.",
+        "is_derived": False,
+        "calculation": None,
+    },
+}
+
 st.set_page_config(
     page_title="Hackalysis | Hackathon Repo Detection",
     page_icon="🔬",
@@ -834,6 +898,17 @@ def render_features(df: pd.DataFrame):
         key="feature_selector"
     )
     selected_col = feature_options[selected_feature_name]
+
+    # Display feature definition and calculation
+    feature_info = FEATURE_METADATA[selected_feature_name]
+    with st.expander(f"ℹ️ What is '{selected_feature_name}'?", expanded=True):
+        st.markdown(f"**Definition:** {feature_info['definition']}")
+        if feature_info["is_derived"]:
+            st.markdown(f"📐 **Derived Feature** — {feature_info['calculation']}")
+        else:
+            st.markdown("📊 **Raw Feature** — Collected directly from GitHub")
+
+    st.markdown("")  # Add spacing
 
     fig_box = go.Figure()
 
