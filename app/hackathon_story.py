@@ -25,6 +25,9 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
 import streamlit as st
 
+from hackathon_analysis.common_utils import load_huggingface_dataset
+from hackathon_analysis.data_extraction.dataset_resolver import get_hf_repo_from_env
+
 # ---------------------------------------------------------------------------
 # Configuration & Constants
 # ---------------------------------------------------------------------------
@@ -256,7 +259,32 @@ def load_project_metadata() -> dict:
 
 @st.cache_data
 def load_predictions() -> pd.DataFrame:
-    df = pd.read_csv(DATA_ROOT / "repo_metadata_with_predictions.csv")
+    """Load predictions dataset from Hugging Face Hub (with local fallback for testing)."""
+    local_csv = DATA_ROOT / "repo_metadata_with_predictions.csv"
+
+    # Local-first fallback: use local file if it exists (useful during testing)
+    if local_csv.exists():
+        import logging
+        logging.info("Loading predictions from local file (fallback): %s", local_csv)
+        df = pd.read_csv(local_csv)
+    else:
+        # Primary: load from Hugging Face Hub
+        try:
+            import logging
+            logging.info("Loading predictions from Hugging Face Hub...")
+            repo = get_hf_repo_from_env()
+            hf_dataset = load_huggingface_dataset(
+                repo_id=repo.repo_id,
+                split="train",
+            )
+            df = hf_dataset.to_pandas()
+            logging.info("Successfully loaded %d repos from HF Hub", len(df))
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load predictions from Hugging Face Hub: {e}\n"
+                f"HF_REPO_ID: {repo.repo_id}\n"
+                f"Make sure the dataset exists on HF Hub and HF_TOKEN is set if private."
+            ) from e
 
     # Parse stringified lists
     for col in ["concept_list", "repo_concept_names", "concept_project_freq_buckets", "topics"]:
