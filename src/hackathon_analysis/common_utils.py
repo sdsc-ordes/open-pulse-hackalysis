@@ -5,6 +5,7 @@ from pathlib import Path
 
 import typer
 from huggingface_hub import upload_folder
+from dotenv import load_dotenv
 
 
 def upload_to_hugging_face(
@@ -28,6 +29,8 @@ def upload_to_hugging_face(
         HF_REPO_TYPE: Type of repository - "dataset" or "model" (default: dataset)
         HF_TOKEN: Hugging Face authentication token (optional if already logged in)
     """
+    load_dotenv(override=False)
+
     # Always get values from environment variables / .env file
     repo_id = os.getenv(
         "HF_REPO_ID", "SDSC/open-pulse-hackathon-data-analysis")
@@ -49,6 +52,14 @@ def upload_to_hugging_face(
         if verbose:
             typer.echo(
                 f"  ⚠ Warning: Failed to upload to Hugging Face: {e}", err=True
+            )
+            typer.echo(
+                (
+                    "  Hint: set `HF_REPO_ID` to an existing dataset repo and "
+                    "authenticate with `HF_TOKEN` or `huggingface-cli login`, "
+                    "or rerun with `--no-upload`."
+                ),
+                err=True,
             )
         return False
 

@@ -77,16 +77,20 @@ def extract(
         Optional[str],
         typer.Option("--hackathon_name", "-n", help="Hackathon name for Devpost"),
     ] = None,
+    upload: Annotated[
+        bool,
+        typer.Option("--upload/--no-upload", help="Upload outputs back to Hugging Face"),
+    ] = True,
 ):
     output_folder.mkdir(parents=True, exist_ok=True)
 
     if hackathon_provider.lower() == "lauzhack":
-        extract_lauzhack(output_folder, years)
+        extract_lauzhack(output_folder, years, upload=upload)
     elif hackathon_provider.lower() == "devpost":
         if not hackathon_name:
             typer.echo("Error: --hackathon_name is required for devpost provider", err=True)
             raise typer.Exit(code=1)
-        extract_devpost(output_folder, hackathon_name, years)
+        extract_devpost(output_folder, hackathon_name, years, upload=upload)
     else:
         typer.echo(f"Error: Unknown provider '{hackathon_provider}'", err=True)
         raise typer.Exit(code=1)
