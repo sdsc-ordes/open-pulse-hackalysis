@@ -15,58 +15,123 @@
 
 - [Eisha Tir Raazia](mailto:eisha.raazia@epfl.ch)
 
+## Overview
+
+This project analyses hackathon and open source repositories to understand what distinguishes them. It extracts data from hackathon platforms and GitHub, enriches repositories with semantic concepts, and identifies the signals that separate hackathon projects from regular open source work — things like burst commit patterns, repo age, contributor count, and topic composition.
+
+The analysis pipeline was validated on LauzHack (2023-2025) as a case study with 487 repositories. Three prediction methods were developed and compared, and the best-performing model (Random Forest, 86% CV accuracy) is available for live classification of any GitHub repo.
+
+### Key Features
+
+- **Data extraction** from LauzHack, Devpost, and GitHub (REST + GraphQL APIs)
+- **Concept enrichment** via the EPFL Graph API (optional)
+- **Exploratory analysis** of hackathon vs open source repo characteristics
+- **Three prediction methods** for hackathon repo detection:
+  - Naive rule-based (keyword matching + GitHub stats)
+  - Correlation-weighted scoring
+  - Random Forest classifier
+- **Live prediction** — give it any GitHub URL, get a classification
+- **Interactive Streamlit dashboard** with EDA, method comparison, concept network graph, and a live prediction tab
+
 ## Installation
 
-Describe the installation instruction here.
+```bash
+uv sync
+```
+
+Create a `.env` file in the project root:
+
+```env
+DATA_ROOT=/path/to/your/data
+GITHUB_TOKEN=ghp_your_token_here
+
+# Optional: EPFL concept enrichment
+EPFL_GRAPH_API_HOST=https://graphai.epfl.ch
+EPFL_GRAPH_API_PORT=443
+EPFL_GRAPH_API_USER=your_user
+EPFL_GRAPH_API_PASSWORD=your_password
+```
 
 ## Usage
 
+### Predict a Repository
+
+Classify any public GitHub repo as hackathon or not:
+
+```bash
+uv run hackalysis predict "https://github.com/user/repo"
+```
+
+Get JSON output:
+
+```bash
+uv run hackalysis predict "https://github.com/user/repo" --json
+```
+
+### Retrain Models
+
+After adding new labeled data, retrain the prediction models:
+
+```bash
+uv run hackalysis train-model
+```
+
+### Streamlit Dashboard
+
+```bash
+uv run streamlit run app/hackathon_story.py
+```
+
+Navigate to "6. Try It Yourself" in the sidebar to classify repos interactively.
+
 ### Extract Hackathon Data
 
-Extract data from LauzHack:
+Extract project data from LauzHack:
 
 ```bash
-just hackalysis --output_folder ./data --hackathon_provider lauzhack
+uv run hackalysis extract -o ./data -p lauzhack -y 2023,2024,2025
 ```
 
-Extract specific LauzHack years with the CLI:
+Extract from Devpost:
 
 ```bash
-uv run hackalysis -o ./data -p lauzhack -y 2023,2024,2025
+uv run hackalysis extract -o ./data -p devpost -n "ExampleHackathonName"
 ```
 
-````
-Extract data without specifying the years will default to extracting all available years for the specified provider.
-```bash
-uv run hackalysis -o ./data -p lauzhack
-```
+### Extract GitHub Metadata
 
-Extract data from Devpost:
-
-```bash
-just hackalysis --output_folder ./data --hackathon_provider devpost --hackathon_name "ExampleHackathonName"
-```
-or
-
-```bash
-just hackalysis -o ./data -p devpost -n "ExampleHackathonName"
-```
-
-Extract GitHub metadata for repos referenced by an extracted hackathon dataset:
+Fetch GitHub metadata for repos referenced by an extracted hackathon dataset:
 
 ```bash
 uv run hackalysis github-extract -o ./data -p lauzhack -y 2023
 ```
 
-Extract GitHub metadata directly from a GitHub organization or user account:
+Extract repos from a GitHub organization or user account:
 
 ```bash
 uv run hackalysis github-extract-account -o ./data -a openai --no-upload
 ```
 
-This writes outputs under `./data/github-account-openai/` and produces both:
-- `github_account_github_repo_metadata.{json,parquet}`
-- `github_account_github_project_metadata.{json,parquet}`
+## Project Structure
+
+```
+src/hackathon_analysis/
+  data_extraction/     # Scraping + GitHub API client
+  data_enrichment/     # EPFL concept enrichment
+  data_analysis/       # EDA notebooks
+  prediction/          # Prediction pipeline
+    feature_engineering.py   # Derived features from GitHub metadata
+    naive_rules.py           # Method 1: keyword + stats rules
+    correlation_weighted.py  # Method 2: correlation-weighted scoring
+    random_forest.py         # Method 3: Random Forest classifier
+    concepts.py              # Optional EPFL concept enrichment
+    pipeline.py              # Main entry point: URL -> prediction
+    train_model.py           # Train and save model artifacts
+  models/              # Saved model artifacts
+app/                   # Streamlit dashboard
+notebooks/             # Analysis notebooks
+tests/                 # Test suite
+```
 
 ## Development
 
@@ -74,6 +139,12 @@ Read first the [Contribution Guidelines](/CONTRIBUTING.md).
 
 For technical documentation on setup and development, see the
 [Development Guide](docs/development-guide.md)
+
+### Running Tests
+
+```bash
+uv run pytest
+```
 
 ## Acknowledgement
 
