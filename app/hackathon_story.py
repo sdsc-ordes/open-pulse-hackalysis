@@ -806,62 +806,84 @@ def render_features(df: pd.DataFrame):
 
     st.markdown("---")
 
-    # Violin plots for key numeric features
+    # Interactive feature selector with box plots
     st.subheader("Distribution of Key Features")
     st.caption(
-        "Each shape shows how repositories are spread across a range of values. "
-        "The wider the shape, the more repos have that value. The box shows the typical range "
-        "(with the median line), and the dashed line shows the mean. Look for where green and blue "
-        "shapes DON'T overlap — that's where the two groups differ most."
+        "Box plots show the typical range (box), median (line), and outliers (dots). "
+        "Green = Hackathon repos, Blue = Non-hackathon repos. Look for non-overlapping boxes — that's where the groups differ most."
     )
 
-    violin_features = [
-        ("active_days_default_branch", "Days with Code Changes"),
-        ("repo_age_days", "Repository Age (Days)"),
-        ("readme_length", "README Length (chars)"),
-        ("commit_count_default_branch", "Number of Commits"),
-    ]
+    feature_options = {
+        "Days with Code Changes": "active_days_default_branch",
+        "Repository Age (Days)": "repo_age_days",
+        "README Length (characters)": "readme_length",
+        "Number of Commits": "commit_count_default_branch",
+        "Repository Stars": "stars",
+        "Number of Forks": "forks",
+        "Number of Contributors": "contributors_count",
+        "Total Issues": "issues_total",
+        "Total Pull Requests": "pull_requests_total",
+        "Total Files": "files_total_count",
+        "Total Directories": "dirs_total_count",
+        "Watchers": "watchers",
+    }
 
-    fig_violins = make_subplots(
-        rows=2, cols=2,
-        subplot_titles=[t for _, t in violin_features],
-        vertical_spacing=0.12,
-        horizontal_spacing=0.08,
+    selected_feature_name = st.selectbox(
+        "Choose a metric to visualize:",
+        options=list(feature_options.keys()),
+        key="feature_selector"
     )
+    selected_col = feature_options[selected_feature_name]
 
-    for idx, (col, title) in enumerate(violin_features):
-        row, col_idx = idx // 2 + 1, idx % 2 + 1
-        for label, color in [("Hackathon", HACKATHON_COLOR), ("Non-Hackathon", NON_HACKATHON_COLOR)]:
-            subset = valid[valid["label"] == label][col].dropna()
-            subset = subset.clip(lower=0)  # sanitize: no negative ages/lengths
-            fig_violins.add_trace(
-                go.Violin(
-                    y=subset,
-                    name=label,
-                    legendgroup=label,
-                    showlegend=(idx == 0),
-                    marker_color=color,
-                    fillcolor=color,
-                    line_color=color,
-                    box_visible=True,
-                    meanline_visible=True,
-                    opacity=0.75,
-                    spanmode="soft",
-                ),
-                row=row,
-                col=col_idx,
-            )
+    fig_box = go.Figure()
 
-    fig_violins.update_layout(
-        height=620,
-        violinmode="group",
-        legend=dict(orientation="h", y=1.06, font=dict(size=13)),
+    for label, color in [("Hackathon", HACKATHON_COLOR), ("Non-Hackathon", NON_HACKATHON_COLOR)]:
+        subset_mask = valid["label"] == label
+        subset_data = valid[subset_mask][selected_col].dropna()
+        subset_data = subset_data.clip(lower=0)
+
+        # Get corresponding repo URLs for hover
+        repo_urls = valid[subset_mask].loc[subset_data.index, "repo_url"].values
+
+        fig_box.add_trace(go.Box(
+            y=subset_data,
+            name=label,
+            marker_color=color,
+            boxmean="sd",
+            opacity=0.8,
+            boxpoints=False,  # Hide default points
+            customdata=repo_urls,
+            hovertemplate="<b>%{customdata}</b><br>" +
+                          selected_feature_name + ": %{y:,.0f}<br>" +
+                          "<extra></extra>",
+        ))
+
+        # Add scatter points overlay for individual repos (markers only, no lines)
+        fig_box.add_trace(go.Scatter(
+            y=subset_data,
+            x=[label] * len(subset_data),
+            mode="markers",
+            marker=dict(color=color, size=6, opacity=0.5),
+            customdata=repo_urls,
+            hovertemplate="<b>%{customdata}</b><br>" +
+                          selected_feature_name + ": %{y:,.0f}<br>" +
+                          "<extra></extra>",
+            showlegend=False,
+            name="",
+        ))
+
+    fig_box.update_layout(
+        height=500,
+        title_text=f"<b>{selected_feature_name}</b><br><sub>Green vs Blue — larger box = wider spread of values</sub>",
+        yaxis_title=selected_feature_name,
+        xaxis_title="Repository Type",
         plot_bgcolor="#fafcf8",
         paper_bgcolor="white",
+        yaxis=dict(gridcolor="#e2e8f0"),
+        showlegend=True,
+        legend=dict(orientation="v", x=1.05, y=1),
     )
-    # Add subtle gridlines
-    fig_violins.update_yaxes(gridcolor="#e2e8f0", gridwidth=1, zeroline=False)
-    st.plotly_chart(fig_violins, use_container_width=True)
+    st.plotly_chart(fig_box, use_container_width=True)
 
     st.markdown("---")
 
@@ -952,11 +974,13 @@ def render_features(df: pd.DataFrame):
     )
 
     fisher_df = compute_fisher_stats(df)
-    # Show only FDR-significant concepts; fall back to top by importance if too few
+    # Show only FDR-significant concepts with meaningful effect size (|log2_OR| >= 0.5 means ~1.4x difference)
     significant = fisher_df[fisher_df["significant_fdr"]] if "significant_fdr" in fisher_df.columns else fisher_df
-    top_n = 25
+    meaningful = significant[significant["log2_odds_ratio"].abs() >= 0.5]
+
+    top_n = min(25, len(meaningful))  # Adaptive: show up to 25, or fewer if not enough meaningful topics
     n_half = top_n // 2
-    top_concepts = pd.concat([significant.head(n_half + 1), significant.tail(n_half)])
+    top_concepts = pd.concat([meaningful.head(n_half + 1), meaningful.tail(n_half)])
     top_concepts = top_concepts.drop_duplicates(subset="concept").sort_values("log2_odds_ratio")
 
     fig_fisher = px.bar(
@@ -989,6 +1013,111 @@ def render_features(df: pd.DataFrame):
         yaxis=dict(dtick=1),
     )
     st.plotly_chart(fig_fisher, use_container_width=True)
+
+    with st.expander("📚 Further Reading: Fisher's Exact Test & Odds Ratios"):
+        st.markdown(
+            """
+        ## What This Method Does 
+
+        **In Plain English:**
+        We're asking: "Which topics appear way more often in hackathon repos vs non-hackathon repos?"
+        For each topic, we build a 2×2 table (Topic: Yes/No × Repo Type: Hackathon/Non-hackathon) and
+        test whether the association is real or just random chance using Fisher's exact test.
+        Topics that show a strong, statistically significant pattern are flagged.
+
+        **Key Metrics:**
+        - **Odds Ratio (OR)**: How many times more/less likely a topic appears in hackathon repos
+          - OR = 4 means hackathon repos are 4× more likely to have this topic
+          - OR = 0.25 means hackathon repos are 4× *less* likely to have it
+        - **Log₂ Odds Ratio**: Converted to log scale for visualization
+          - +2 = 4× more likely (because 2² = 4)
+          - -2 = 4× less likely
+        - **P-value**: Probability this pattern happened by random chance (lower = more confident)
+        - **FDR Correction**: Adjusts p-values because we test hundreds of topics at once
+
+        ---
+
+        ## Mathematical Formulas
+
+        **1. Fisher's Exact Test - 2×2 Contingency Table:**
+        """
+        )
+        st.latex(r"""
+        \begin{array}{c|cc}
+        & \text{Topic Present} & \text{Topic Absent} \\
+        \hline
+        \text{Hackathon Repo} & a & c \\
+        \text{Non-Hackathon Repo} & b & d \\
+        \end{array}
+        """)
+
+        st.markdown(
+            """
+        Where:
+        - **a** = count of hackathon repos WITH the topic
+        - **b** = count of non-hackathon repos WITH the topic
+        - **c** = count of hackathon repos WITHOUT the topic (= n_hack - a)
+        - **d** = count of non-hackathon repos WITHOUT the topic (= n_non - b)
+
+        **Fisher's exact p-value** (hypergeometric distribution):
+        """
+        )
+        st.latex(r"""
+        p = \frac{\binom{a+b}{a}\binom{c+d}{c}}{\binom{n}{a+c}}
+        """)
+
+        st.markdown(
+            """
+        **2. Odds Ratio (OR):**
+        """
+        )
+        st.latex(r"""
+        \text{OR} = \frac{a \cdot d}{b \cdot c}
+        """)
+
+        st.markdown(
+            """
+        Interpretation:
+        - OR > 1: Topic favors hackathon repos
+        - OR < 1: Topic favors non-hackathon repos
+        - OR = 1: No association
+
+        **3. Log₂ Odds Ratio (What You See in Chart):**
+        """
+        )
+        st.latex(r"""
+        \text{Log}_2(\text{OR}) = \log_2\left(\frac{a \cdot d}{b \cdot c}\right)
+        """)
+
+        st.markdown(
+            """
+        **4. FDR Correction (Benjamini-Hochberg):**
+
+        When testing hundreds of topics, some will appear significant by random chance.
+        FDR correction adjusts all p-values upward to control the False Discovery Rate at 5%.
+
+        - Only topics with FDR-adjusted p-value < 0.05 are shown with full confidence
+        - Protects against false positives in multiple comparisons
+
+        **5. Importance Score (For Ranking):**
+        """
+        )
+        st.latex(r"""
+        \text{Importance} = -\log_{10}(p_{\text{adjusted}}) \times \text{sign}(\text{Log}_2(\text{OR}))
+        """)
+
+        st.markdown(
+            """
+        Combines strength (p-value) and direction (positive for hackathon, negative for non-hackathon).
+
+        ---
+
+        ## Why This Matters c of hackathons
+        - **Statistically Rigorous**: Fisher's exact test makes no distributional assumptions
+        - **Multiple Testing Controlled**: FDR correction prevents false alarms
+        - **Interpretable**: Log₂ scale shows practical effect sizes (2× difference = log₂ of 1)
+        """
+        )
 
     with st.expander("How We Chose Which Features to Use"):
         st.markdown(
