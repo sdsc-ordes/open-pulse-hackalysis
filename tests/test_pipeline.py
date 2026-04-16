@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import numpy as np
 import pandas as pd
@@ -12,6 +12,9 @@ from hackathon_analysis.prediction.pipeline import (
     predict_repo,
     predict_repo_pretty,
     fetch_single_repo_metadata,
+    _ensure_model_file_from_hf,
+    _load_correlation_weights,
+    _load_rf_model,
 )
 from hackathon_analysis.prediction.train_model import train_and_save
 
@@ -241,3 +244,239 @@ def test_predict_repo_github_error(mock_fetch, trained_models_dir):
 
     with pytest.raises(RuntimeError, match="no data"):
         predict_repo(url, github_token="fake-token", models_dir=trained_models_dir)
+
+
+# ---------------------------------------------------------------------------
+# Tests: Model loading with HF Hub fallback (local-first pattern)
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureModelFileFromHF:
+    """Tests for the _ensure_model_file_from_hf() function (local-first pattern)."""
+
+    def test_local_file_exists_returns_immediately(self, trained_models_dir):
+        """If model file exists locally, return path immediately (fast path)."""
+        # The correlation_weights.json file was created by train_and_save()
+        result = _ensure_model_file_from_hf(trained_models_dir, "correlation_weights.json")
+
+        assert result.exists()
+        assert result.name == "correlation_weights.json"
+        assert result.parent == trained_models_dir
+
+    def test_creates_models_dir_if_missing(self, tmp_path):
+        """Should create models_dir if it doesn't exist."""
+        models_dir = tmp_path / "models" / "subdir"
+        assert not models_dir.exists()
+
+        # Create a dummy file to prevent actual HF download
+        dummy_file = models_dir / "test_model.pkl"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        dummy_file.write_text("dummy")
+
+        result = _ensure_model_file_from_hf(models_dir, "test_model.pkl")
+
+        assert result.exists()
+        assert result.parent == models_dir
+
+    @patch("hackathon_analysis.prediction.pipeline.hf_hub_download")
+    @patch("hackathon_analysis.prediction.pipeline.get_hf_repo_from_env")
+    def test_downloads_from_hf_if_local_missing(self, mock_get_hf, mock_download, tmp_path):
+        """If local file missing, should download from HF Hub."""
+        from hackathon_analysis.data_extraction.dataset_resolver import HFRepo
+
+        # Setup mocks
+        models_dir = tmp_path / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+        mock_get_hf.return_value = HFRepo(
+            repo_id="test/repo",
+            repo_type="dataset"
+        )
+
+        # Setup mock to create file when called (simulating HF download)
+        def create_and_return_file(*args, **kwargs):
+            downloaded_file = models_dir / "rf_model.pkl"
+            downloaded_file.write_text("model data")
+            return str(downloaded_file)
+
+        mock_download.side_effect = create_and_return_file
+
+        result = _ensure_model_file_from_hf(models_dir, "rf_model.pkl")
+
+        # Verify download was called with correct parameters
+        mock_download.assert_called_once()
+        call_args = mock_download.call_args
+        assert call_args[1]["repo_id"] == "test/repo"
+        assert call_args[1]["filename"] == "models/rf_model.pkl"
+        assert call_args[1]["repo_type"] == "dataset"
+
+        # Verify result points to the downloaded file
+        assert result.exists()
+
+    @patch("hackathon_analysis.prediction.pipeline.hf_hub_download")
+    @patch("hackathon_analysis.prediction.pipeline.get_hf_repo_from_env")
+    def test_raises_error_when_download_fails(self, mock_get_hf, mock_download, tmp_path):
+        """If local missing and HF download fails, should raise FileNotFoundError."""
+        from hackathon_analysis.data_extraction.dataset_resolver import HFRepo
+
+        models_dir = tmp_path / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        mock_get_hf.return_value = HFRepo(
+            repo_id="test/repo",
+            repo_type="dataset"
+        )
+        mock_download.side_effect = Exception("Network error")
+
+        with pytest.raises(FileNotFoundError, match="could not be downloaded"):
+            _ensure_model_file_from_hf(models_dir, "missing_model.pkl")
+
+
+class TestLoadCorrelationWeightsWithHF:
+    """Tests for _load_correlation_weights() with HF fallback."""
+
+    def test_loads_from_local_file(self, trained_models_dir):
+        """Should load correlation weights from local file."""
+        import hackathon_analysis.prediction.pipeline as pipeline_mod
+
+        # Reset cache to force reload
+        pipeline_mod._cached_corr_weights = None
+
+        weights = _load_correlation_weights(trained_models_dir)
+
+        assert weights is not None
+        assert hasattr(weights, "to_dict")  # CorrelationWeights has to_dict()
+
+    def test_caches_after_first_load(self, trained_models_dir):
+        """Should cache weights in memory after first load."""
+        import hackathon_analysis.prediction.pipeline as pipeline_mod
+
+        pipeline_mod._cached_corr_weights = None
+
+        # First load
+        weights1 = _load_correlation_weights(trained_models_dir)
+        # Second load should return cached version
+        weights2 = _load_correlation_weights(trained_models_dir)
+
+        assert weights1 is weights2  # Same object (cached)
+
+    @patch("hackathon_analysis.prediction.pipeline._ensure_model_file_from_hf")
+    def test_calls_ensure_before_loading(self, mock_ensure, trained_models_dir):
+        """Should call _ensure_model_file_from_hf before loading."""
+        import hackathon_analysis.prediction.pipeline as pipeline_mod
+
+        pipeline_mod._cached_corr_weights = None
+
+        # Setup mock to return actual file
+        corr_file = trained_models_dir / "correlation_weights.json"
+        mock_ensure.return_value = corr_file
+
+        weights = _load_correlation_weights(trained_models_dir)
+
+        # Verify ensure was called with correct parameters
+        mock_ensure.assert_called_once_with(trained_models_dir, "correlation_weights.json")
+        assert weights is not None
+
+
+class TestLoadRandomForestModelWithHF:
+    """Tests for _load_rf_model() with HF fallback."""
+
+    def test_loads_from_local_file(self, trained_models_dir):
+        """Should load RF model from local pickle file."""
+        import hackathon_analysis.prediction.pipeline as pipeline_mod
+
+        pipeline_mod._cached_rf_model = None
+
+        model = _load_rf_model(trained_models_dir)
+
+        assert model is not None
+        assert hasattr(model, "model")  # TrainedRandomForest has model attribute
+        assert hasattr(model, "features")  # TrainedRandomForest has features
+        assert hasattr(model, "importances")  # TrainedRandomForest has importances
+
+    def test_caches_after_first_load(self, trained_models_dir):
+        """Should cache model in memory after first load."""
+        import hackathon_analysis.prediction.pipeline as pipeline_mod
+
+        pipeline_mod._cached_rf_model = None
+
+        # First load
+        model1 = _load_rf_model(trained_models_dir)
+        # Second load should return cached version
+        model2 = _load_rf_model(trained_models_dir)
+
+        assert model1 is model2  # Same object (cached)
+
+    @patch("hackathon_analysis.prediction.pipeline._ensure_model_file_from_hf")
+    def test_calls_ensure_before_loading(self, mock_ensure, trained_models_dir):
+        """Should call _ensure_model_file_from_hf before loading."""
+        import hackathon_analysis.prediction.pipeline as pipeline_mod
+
+        pipeline_mod._cached_rf_model = None
+
+        # Setup mock to return actual file
+        rf_file = trained_models_dir / "rf_model.pkl"
+        mock_ensure.return_value = rf_file
+
+        model = _load_rf_model(trained_models_dir)
+
+        # Verify ensure was called with correct parameters
+        mock_ensure.assert_called_once_with(trained_models_dir, "rf_model.pkl")
+        assert model is not None
+
+
+class TestLocalFirstPattern:
+    """Integration tests for the local-first with HF fallback pattern."""
+
+    def test_local_models_used_when_available(self, trained_models_dir):
+        """When models exist locally, they should be used (fast path)."""
+        import hackathon_analysis.prediction.pipeline as pipeline_mod
+
+        pipeline_mod._cached_corr_weights = None
+        pipeline_mod._cached_rf_model = None
+
+        # Both files should exist (created by train_and_save)
+        assert (trained_models_dir / "correlation_weights.json").exists()
+        assert (trained_models_dir / "rf_model.pkl").exists()
+
+        # Loading should work without any HF calls
+        corr_weights = _load_correlation_weights(trained_models_dir)
+        rf_model = _load_rf_model(trained_models_dir)
+
+        assert corr_weights is not None
+        assert rf_model is not None
+
+    @patch("hackathon_analysis.prediction.pipeline.hf_hub_download")
+    @patch("hackathon_analysis.prediction.pipeline.get_hf_repo_from_env")
+    def test_hf_download_only_on_first_missing_file(
+        self, mock_get_hf, mock_download, tmp_path
+    ):
+        """HF should only be accessed when local file is missing."""
+        from hackathon_analysis.data_extraction.dataset_resolver import HFRepo
+
+        models_dir = tmp_path / "models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create one model file locally
+        corr_file = models_dir / "correlation_weights.json"
+        corr_file.write_text('{"feature": 0.5}')
+
+        # Setup mock for rf_model.pkl download
+        mock_get_hf.return_value = HFRepo(repo_id="test/repo", repo_type="dataset")
+
+        def create_rf_file(*args, **kwargs):
+            """Create file when mock is called (simulating download)."""
+            rf_file = models_dir / "rf_model.pkl"
+            rf_file.write_text("model_data")
+            return str(rf_file)
+
+        mock_download.side_effect = create_rf_file
+
+        # First call - should use local file (no HF call)
+        result1 = _ensure_model_file_from_hf(models_dir, "correlation_weights.json")
+        assert result1.exists()
+        mock_download.assert_not_called()
+
+        # Second call - should download (file missing)
+        result2 = _ensure_model_file_from_hf(models_dir, "rf_model.pkl")
+        assert result2.exists()
+        mock_download.assert_called_once()
