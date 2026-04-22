@@ -297,31 +297,16 @@ def load_predictions() -> pd.DataFrame:
         return df
 
     except Exception as hf_error:
-        # Provide helpful error message
-        error_msg = (
-            "\n" + "=" * 70 + "\n"
-            "❌ ERROR: Could not load prediction data from either source\n"
-            "=" * 70 + "\n\n"
-            "📍 WHAT HAPPENED:\n"
-            f"  • Local file missing: {local_csv}\n"
-            f"  • HF Hub load failed: {str(hf_error)[:100]}...\n\n"
-            "🔧 HOW TO FIX:\n"
-            "  Option 1 (Recommended): Generate data from notebook\n"
-            "    1. Open: src/hackathon_analysis/data_analysis/repo_analysis.ipynb\n"
-            "    2. Run all cells to generate repo_metadata_with_predictions.csv\n"
-            "    3. This will also upload to HF automatically\n\n"
-            "  Option 2: Download from Hugging Face\n"
-            "    1. Set environment variables in .env:\n"
-            f"       HF_REPO_ID=SDSC/open-pulse-hackathon-data-analysis\n"
-            "       HF_TOKEN=your_hf_token_here\n"
-            "    2. The dashboard will auto-download from HF\n\n"
-            "📝 TECHNICAL DETAILS:\n"
-            f"  • HF_REPO_ID: {get_hf_repo_from_env().repo_id}\n"
-            f"  • Local path: {local_csv}\n"
-            f"  • Error: {hf_error}\n"
-            "=" * 70 + "\n"
+        # Raise with minimal technical details — UI handles friendly message
+        logging.error(
+            "Data loading failed: local=%s missing, HF=%s",
+            local_csv.exists(),
+            str(hf_error)[:50]
         )
-        raise RuntimeError(error_msg) from hf_error
+        raise RuntimeError(
+            f"Could not load data from local file or Hugging Face Hub. "
+            f"HF error: {str(hf_error)[:100]}"
+        ) from hf_error
 
     # Parse stringified lists
     for col in ["concept_list", "repo_concept_names", "concept_project_freq_buckets", "topics"]:
@@ -2421,7 +2406,26 @@ def main():
         )
 
     # Load data
-    df = load_predictions()
+    try:
+        df = load_predictions()
+    except RuntimeError as e:
+        # Display clean error message instead of ugly exception
+        st.error(
+            "⚠️ **Could not load prediction data**\n\n"
+            "The dashboard needs data to display. You have two options:\n\n"
+            "**Option 1: Generate Data Locally (Recommended)** ✅\n"
+            "1. Open the notebook: `src/hackathon_analysis/data_analysis/repo_analysis.ipynb`\n"
+            "2. Run all cells end-to-end\n"
+            "3. This generates `repo_metadata_with_predictions.csv` locally and uploads to Hugging Face\n\n"
+            "**Option 2: Use Hugging Face Hub** 🤗\n"
+            "1. Set these environment variables in `.env`:\n"
+            "   - `HF_REPO_ID=your_hf_repo_id`\n"
+            "   - `HF_TOKEN=your_hf_token`\n"
+            "2. Restart the dashboard—it will auto-download data\n\n"
+            "📖 **Need help?** Check the README for setup instructions."
+        )
+        st.stop()
+        return
 
     # Route to section
     if section.startswith("1"):
