@@ -277,36 +277,34 @@ def load_predictions() -> pd.DataFrame:
         try:
             df = pd.read_csv(local_csv)
             logging.info("✓ Loaded %d repos from local CSV", len(df))
-            return df
         except Exception as e:
             logging.error("Failed to read local CSV: %s", e)
             raise RuntimeError(f"Failed to read local predictions CSV: {e}") from e
 
-    # Path 2: Hugging Face Hub (primary for production)
-    logging.info("📡 Local file not found, loading from Hugging Face Hub...")
-    try:
-        repo = get_hf_repo_from_env()
-        logging.info("   HF_REPO_ID: %s", repo.repo_id)
+    else:
+        # Path 2: Hugging Face Hub (primary for production)
+        logging.info("📡 Local file not found, loading from Hugging Face Hub...")
+        try:
+            repo = get_hf_repo_from_env()
+            logging.info("   HF_REPO_ID: %s", repo.repo_id)
 
-        hf_dataset = load_huggingface_dataset(
-            repo_id=repo.repo_id,
-            split="train",
-        )
-        df = hf_dataset.to_pandas()
-        logging.info("✓ Loaded %d repos from Hugging Face Hub", len(df))
-        return df
+            hf_dataset = load_huggingface_dataset(
+                repo_id=repo.repo_id,
+                split="train",
+            )
+            df = hf_dataset.to_pandas()
+            logging.info("✓ Loaded %d repos from Hugging Face Hub", len(df))
 
-    except Exception as hf_error:
-        # Raise with minimal technical details — UI handles friendly message
-        logging.error(
-            "Data loading failed: local=%s missing, HF=%s",
-            local_csv.exists(),
-            str(hf_error)[:50]
-        )
-        raise RuntimeError(
-            f"Could not load data from local file or Hugging Face Hub. "
-            f"HF error: {str(hf_error)[:100]}"
-        ) from hf_error
+        except Exception as hf_error:
+            logging.error(
+                "Data loading failed: local=%s missing, HF=%s",
+                local_csv.exists(),
+                str(hf_error)[:50]
+            )
+            raise RuntimeError(
+                f"Could not load data from local file or Hugging Face Hub. "
+                f"HF error: {str(hf_error)[:100]}"
+            ) from hf_error
 
     # Parse stringified lists
     for col in ["concept_list", "repo_concept_names", "concept_project_freq_buckets", "topics"]:
@@ -396,7 +394,8 @@ def compute_fisher_stats(df: pd.DataFrame) -> pd.DataFrame:
             continue
         table = np.array([[a, b], [c, d]])
         odds_ratio, p_value = fisher_exact(table)
-        log2_or = np.log2(odds_ratio) if odds_ratio > 0 else 0
+        # Cap odds ratio before log to avoid inf (concepts exclusive to one group)
+        log2_or = np.log2(min(odds_ratio, 1024)) if odds_ratio > 0 else 0
         lift = (a / max(n_hack, 1)) / (max((a + b), 1) / max(n_hack + n_non, 1))
         importance = -np.log10(max(p_value, 1e-300)) * np.sign(log2_or)
         rows.append(
@@ -473,6 +472,7 @@ def compute_rf_importances(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         "year",
         "prediction_agreement",
         # Label leakers
+        "is_hackathon_year",
         "is_linked_project",
         "repo_predicted_score",
         "repo_predicted_flag",
@@ -791,7 +791,116 @@ def render_introduction(df: pd.DataFrame):
         fig_labels.update_traces(textposition="outside", textfont_size=14)
         st.plotly_chart(fig_labels, use_container_width=True)
 
+    # Data Source Breakdown: LauzHack vs Control Repos
+    st.markdown("---")
+    st.markdown("### Data Source & Metadata Quality")
+
+    # Calculate source breakdown
+    has_project_key = df["project_foreign_key"].fillna("").str.strip().ne("")
+    lauzhack_repos = df[has_project_key]
+    control_repos = df[~has_project_key]
+
+    lauzhack_total = len(lauzhack_repos)
+    lauzhack_valid = (lauzhack_repos["has_valid_metadata"]).sum()
+
+    control_total = len(control_repos)
+    control_valid = (control_repos["has_valid_metadata"]).sum()
+
+    total_all = lauzhack_total + control_total
+    total_valid = lauzhack_valid + control_valid
+    completeness_pct = (total_valid / total_all * 100) if total_all > 0 else 0
+
+    # Create data source table
+    source_data = pd.DataFrame({
+        "Source": [
+            "LauzHack-linked repositories (2023–2025)",
+            "Random user account repositories (control)",
+            "**Total**",
+        ],
+        "Count": [
+            lauzhack_total,
+            control_total,
+            f"**{total_all}**",
+        ],
+        "Valid with Complete Metadata": [
+            lauzhack_valid,
+            control_valid,
+            f"**{total_valid} ({completeness_pct:.0f}%)**",
+        ],
+    })
+
+    # Display as styled table
+    st.write(source_data.to_html(index=False, escape=False), unsafe_allow_html=True)
+
+    # Visual breakdown chart
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        # Stacked bar: repos by source
+        source_chart_data = pd.DataFrame({
+            "Source": ["LauzHack", "Control"],
+            "Valid (with metadata)": [lauzhack_valid, control_valid],
+            "Invalid (missing/deleted)": [lauzhack_total - lauzhack_valid, control_total - control_valid],
+        })
+
+        fig_source = px.bar(
+            source_chart_data,
+            x="Source",
+            y=["Valid (with metadata)", "Invalid (missing/deleted)"],
+            barmode="stack",
+            color_discrete_map={
+                "Valid (with metadata)": SDSC_GREEN,
+                "Invalid (missing/deleted)": ROSE,
+            },
+            labels={"value": "Count", "variable": "Status"},
+            title="Repository Completeness by Source",
+            text_auto=True,
+        )
+        fig_source.update_layout(
+            height=350,
+            margin=dict(l=20, r=20, t=60, b=20),
+            paper_bgcolor="white",
+            yaxis_title="Number of Repositories",
+            xaxis_title="",
+            legend_title="",
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig_source, use_container_width=True)
+
+    with chart_col2:
+        # Pie chart: overall completion rate
+        completion_data = pd.DataFrame({
+            "Status": ["Valid with Complete Metadata", "Missing/Deleted"],
+            "Count": [total_valid, total_all - total_valid],
+        })
+
+        fig_completion = px.pie(
+            completion_data,
+            values="Count",
+            names="Status",
+            color_discrete_map={
+                "Valid with Complete Metadata": SDSC_GREEN,
+                "Missing/Deleted": ROSE,
+            },
+            title="Overall Data Completeness",
+            hole=0.4,  # Donut chart
+        )
+        fig_completion.update_traces(textinfo="label+percent", textfont_size=12)
+        fig_completion.update_layout(
+            height=350,
+            margin=dict(l=20, r=20, t=60, b=20),
+            paper_bgcolor="white",
+        )
+        st.plotly_chart(fig_completion, use_container_width=True)
+
+    st.caption(
+        "**LauzHack repos**: Repositories explicitly linked to LauzHack project pages (213 total, 2023–2025). "
+        "**Control repos**: Random selection from participant GitHub accounts to represent non-hackathon baselines (274 total). "
+        f"Overall, **{completeness_pct:.0f}% of all repositories** have valid, complete GitHub metadata."
+    )
+
     # LauzHack projects vs repositories
+    st.markdown("---")
     st.markdown("### LauzHack Repositories by Year")
 
     # Projects summary stats
@@ -1103,10 +1212,25 @@ def render_features(df: pd.DataFrame):
     significant = fisher_df[fisher_df["significant_fdr"]] if "significant_fdr" in fisher_df.columns else fisher_df
     meaningful = significant[significant["log2_odds_ratio"].abs() >= 0.5]
 
-    top_n = min(25, len(meaningful))  # Adaptive: show up to 25, or fewer if not enough meaningful topics
-    n_half = top_n // 2
-    top_concepts = pd.concat([meaningful.head(n_half + 1), meaningful.tail(n_half)])
-    top_concepts = top_concepts.drop_duplicates(subset="concept").sort_values("log2_odds_ratio")
+    # Split into positive (hackathon-associated) and negative (non-hackathon) separately,
+    # then take the strongest from each side — avoids filling quota with near-zero concepts
+    n_half = 12
+    top_hackathon = (
+        meaningful[meaningful["log2_odds_ratio"] > 0]
+        .sort_values("log2_odds_ratio", ascending=False)
+        .head(n_half)
+    )
+    top_non_hackathon = (
+        meaningful[meaningful["log2_odds_ratio"] < 0]
+        .sort_values("log2_odds_ratio", ascending=True)
+        .head(n_half)
+    )
+    top_concepts = (
+        pd.concat([top_non_hackathon, top_hackathon])
+        .drop_duplicates(subset="concept")
+        .sort_values("log2_odds_ratio", ascending=True)  # bottom = strongest non-hackathon, top = strongest hackathon
+    )
+    top_n = len(top_concepts)
 
     fig_fisher = px.bar(
         top_concepts,
