@@ -16,7 +16,7 @@ import pytest
 
 
 class TestNotebookConceptCacheExport:
-    """Tests for notebook concept cache export (Cell 22)."""
+    """Tests for notebook concept cache export (Cell 22 enrichment + Cell 24 export)."""
 
     @pytest.fixture
     def notebook_path(self):
@@ -54,37 +54,37 @@ class TestNotebookConceptCacheExport:
             except json.JSONDecodeError as e:
                 pytest.fail(f"Notebook JSON is invalid: {e}")
 
-    def test_cell_22_exists(self, notebook_path):
-        """Cell 22 (export cell) should exist."""
+    def test_cell_24_exists(self, notebook_path):
+        """Cell 24 (concept export cell) should exist."""
         with open(notebook_path) as f:
             nb = json.load(f)
 
-        assert len(nb["cells"]) > 22, "Notebook doesn't have cell 22"
-        assert nb["cells"][22]["cell_type"] == "code"
+        assert len(nb["cells"]) > 23, "Notebook doesn't have cell 23"
+        assert nb["cells"][23]["cell_type"] == "code"
 
-    def test_cell_22_exports_to_csv_parquet(self, notebook_path):
-        """Cell 22 should export to both CSV and Parquet."""
+    def test_cell_24_exports_to_csv_parquet(self, notebook_path):
+        """Cell 23 should export to both CSV and Parquet."""
         with open(notebook_path) as f:
             nb = json.load(f)
 
-        cell_22 = nb["cells"][22]
-        source = "".join(cell_22["source"])
+        cell_24 = nb["cells"][23]
+        source = "".join(cell_24["source"])
 
         # Check for CSV export
-        assert ".to_csv(" in source, "CSV export not found in Cell 22"
+        assert ".to_csv(" in source, "CSV export not found in Cell 23"
         assert "repo_metadata_with_concepts.csv" in source
 
         # Check for Parquet export
-        assert ".to_parquet(" in source, "Parquet export not found in Cell 22"
+        assert ".to_parquet(" in source, "Parquet export not found in Cell 23"
         assert "repo_metadata_with_concepts.parquet" in source
 
-    def test_cell_22_saves_cache_json(self, notebook_path):
-        """Cell 22 should save concept cache as JSON."""
+    def test_cell_24_saves_cache_json(self, notebook_path):
+        """Cell 23 should save concept cache as JSON."""
         with open(notebook_path) as f:
             nb = json.load(f)
 
-        cell_22 = nb["cells"][22]
-        source = "".join(cell_22["source"])
+        cell_24 = nb["cells"][23]
+        source = "".join(cell_24["source"])
 
         # Check for cache file path definition
         assert "repo_concepts_cache.json" in source, "Cache file path not found"
@@ -92,17 +92,17 @@ class TestNotebookConceptCacheExport:
         # Check for JSON writing
         assert "json.dump(" in source, "json.dump not found for cache saving"
 
-        # Check that cache is built from concept columns
-        assert "cache_dict" in source, "Cache dictionary not built"
+        # Check that cache is updated from concept columns
+        assert "concept_cache" in source, "concept_cache not referenced (loaded from Cell 4)"
         assert "repo_concept_names" in source
 
-    def test_cell_22_uploads_to_hf(self, notebook_path):
-        """Cell 22 should call upload_to_hugging_face."""
+    def test_cell_24_uploads_to_hf(self, notebook_path):
+        """Cell 23 should call upload_to_hugging_face."""
         with open(notebook_path) as f:
             nb = json.load(f)
 
-        cell_22 = nb["cells"][22]
-        source = "".join(cell_22["source"])
+        cell_24 = nb["cells"][23]
+        source = "".join(cell_24["source"])
 
         # Check for upload call
         assert "upload_to_hugging_face" in source, "Upload function not called"

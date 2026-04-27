@@ -68,7 +68,7 @@ def test_weights_from_dict_defaults():
     """from_dict should use defaults for optional fields."""
     d = {"weights": {"a": 0.5}, "feat_min": {"a": 0.0}, "feat_max": {"a": 1.0}}
     w = CorrelationWeights.from_dict(d)
-    assert w.threshold == 0.5
+    assert w.threshold == 0.65
     assert w.score_min == 0.0
     assert w.score_max == 1.0
 

@@ -53,14 +53,14 @@ class TestNotebookHFUpload:
         assert found_import, "upload_to_hugging_face import not found in notebook"
 
     def test_upload_call_in_export_cell(self, notebook_path):
-        """Export cell (cell 67) should call upload_to_hugging_face."""
+        """Export cell (cell 70) should call upload_to_hugging_face."""
         with open(notebook_path) as f:
             nb = json.load(f)
 
-        # Cell 67 is the export cell
-        assert len(nb["cells"]) > 67, "Notebook doesn't have cell 67"
+        # Cell 70 is the predictions export cell (Cell 69 is ensemble majority vote)
+        assert len(nb["cells"]) > 70, "Notebook doesn't have cell 70"
 
-        export_cell = nb["cells"][67]
+        export_cell = nb["cells"][70]
         assert export_cell["cell_type"] == "code"
 
         source = "".join(export_cell["source"])
@@ -76,7 +76,7 @@ class TestNotebookHFUpload:
         with open(notebook_path) as f:
             nb = json.load(f)
 
-        export_cell = nb["cells"][67]
+        export_cell = nb["cells"][70]
         source = "".join(export_cell["source"])
 
         # Check workflow order
@@ -92,7 +92,7 @@ class TestNotebookHFUpload:
         with open(notebook_path) as f:
             nb = json.load(f)
 
-        export_cell = nb["cells"][67]
+        export_cell = nb["cells"][70]
         source = "".join(export_cell["source"])
 
         assert "repo_metadata_with_predictions.csv" in source, \

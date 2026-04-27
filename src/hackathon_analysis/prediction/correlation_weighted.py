@@ -32,7 +32,7 @@ class CorrelationWeights:
     weights: dict[str, float]
     feat_min: dict[str, float]
     feat_max: dict[str, float]
-    threshold: float = 0.5
+    threshold: float = 0.65
     score_min: float = 0.0
     score_max: float = 1.0
 
@@ -52,7 +52,7 @@ class CorrelationWeights:
             weights=d["weights"],
             feat_min=d["feat_min"],
             feat_max=d["feat_max"],
-            threshold=d.get("threshold", 0.5),
+            threshold=d.get("threshold", 0.65),
             score_min=d.get("score_min", 0.0),
             score_max=d.get("score_max", 1.0),
         )
@@ -67,7 +67,7 @@ def train_correlation_weights(
     df: pd.DataFrame,
     features: list[str],
     target: str = "true_hackathon_repos",
-    threshold: float = 0.5,
+    threshold: float = 0.65,
 ) -> CorrelationWeights:
     """Compute correlation weights and normalization params from training data.
 

@@ -22,7 +22,7 @@ from plotly.subplots import make_subplots
 from scipy.stats import fisher_exact
 from statsmodels.stats.multitest import multipletests
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score, matthews_corrcoef
 import streamlit as st
 
 from hackathon_analysis.common_utils import load_huggingface_dataset
@@ -33,6 +33,13 @@ from hackathon_analysis.data_extraction.dataset_resolver import get_hf_repo_from
 # ---------------------------------------------------------------------------
 
 DATA_ROOT = Path(__file__).resolve().parent.parent / "data"
+
+# Read correlation threshold from saved model so it stays in sync with training
+_corr_weights_path = Path(__file__).resolve().parent.parent / "src/hackathon_analysis/models/correlation_weights.json"
+try:
+    CORR_THRESHOLD = json.load(open(_corr_weights_path)).get("threshold", 0.65)
+except Exception:
+    CORR_THRESHOLD = 0.65
 
 # Color palette — SDSC brand: lime green, indigo blue, dark navy
 SDSC_GREEN = "#90ca42"     # Primary brand — lime green
@@ -52,9 +59,10 @@ SLATE_LIGHT = "#64748b"    # Muted text
 HACKATHON_COLOR = SDSC_GREEN
 NON_HACKATHON_COLOR = SDSC_BLUE
 METHOD_COLORS = {
-    "Naive Rule-Based": "#e8a838",    # Warm amber
-    "Correlation-Weighted": SDSC_BLUE,  # Brand blue
-    "Random Forest": SDSC_GREEN,        # Brand green
+    "Naive Rule-Based": "#e8a838",         # Warm amber
+    "Correlation-Weighted": SDSC_BLUE,     # Brand blue
+    "Random Forest": SDSC_GREEN,           # Brand green
+    "Majority Vote (Ensemble)": "#9b59b6", # Purple
 }
 
 # Feature metadata for dashboard display
@@ -652,14 +660,23 @@ def plot_confusion_matrix(y_true, y_pred, title="", color_scale="Teal"):
     return fig
 
 
-def compute_metrics(y_true, y_pred) -> dict:
-    return {
+def compute_metrics(y_true, y_pred, y_score=None) -> dict:
+    metrics = {
         "Accuracy": accuracy_score(y_true, y_pred),
         "Precision": precision_score(y_true, y_pred, zero_division=0),
         "Recall": recall_score(y_true, y_pred, zero_division=0),
         "F1": f1_score(y_true, y_pred, zero_division=0),
         "Specificity": recall_score(y_true, y_pred, pos_label=0, zero_division=0),
+        "MCC": (matthews_corrcoef(y_true, y_pred) + 1) / 2,  # rescaled to [0,1] for radar chart
     }
+    if y_score is not None:
+        try:
+            metrics["AUC-ROC"] = roc_auc_score(y_true, y_score)
+        except Exception:
+            metrics["AUC-ROC"] = float("nan")
+    else:
+        metrics["AUC-ROC"] = float("nan")
+    return metrics
 
 
 # ---------------------------------------------------------------------------
@@ -1540,7 +1557,7 @@ def render_methods(df: pd.DataFrame):
             <p style='margin:8px 0 0 0; color:#475569;'>
                 This method measures how strongly each characteristic is linked to being a
                 hackathon repo, then combines them into a single score. If a repo's combined
-                score is above 0.5 (on a 0-to-1 scale), we predict "hackathon." It's data-driven
+                score is above {CORR_THRESHOLD} (on a 0-to-1 scale), we predict "hackathon." It's data-driven
                 but assumes each characteristic contributes independently — which isn't always true.
             </p>
         </div>
@@ -1571,7 +1588,7 @@ def render_methods(df: pd.DataFrame):
                 color_discrete_map={"Hackathon": HACKATHON_COLOR, "Non-Hackathon": NON_HACKATHON_COLOR},
                 labels={"corr_weighted_score": "Correlation-Weighted Score", "color": ""},
             )
-            fig_score.add_vline(x=0.5, line_dash="dash", line_color=ROSE, line_width=2, annotation_text="Threshold = 0.5")
+            fig_score.add_vline(x=CORR_THRESHOLD, line_dash="dash", line_color=ROSE, line_width=2, annotation_text=f"Threshold = {CORR_THRESHOLD}")
             fig_score.update_layout(height=380, plot_bgcolor="#fafcf8", paper_bgcolor="white")
             st.plotly_chart(fig_score, use_container_width=True)
 
@@ -1691,15 +1708,21 @@ def render_verdict(df: pd.DataFrame):
     valid = df[df["has_valid_metadata"]].copy()
     y_true = valid["true_hackathon_repos"].astype(int)
 
+    # Ensemble: majority vote (≥2 of 3 methods agree)
+    vote_cols = ["repo_predicted_flag", "corr_weighted_flag", "ml_predicted_flag"]
+    ensemble_vote_count = valid[vote_cols].astype(int).sum(axis=1)
+    valid["ensemble_predicted_flag"] = ensemble_vote_count >= 2
+
     methods = {
-        "Naive Rule-Based": valid["repo_predicted_flag"].astype(int),
-        "Correlation-Weighted": valid["corr_weighted_flag"].astype(int),
-        "Random Forest": valid["ml_predicted_flag"].astype(int),
+        "Naive Rule-Based": (valid["repo_predicted_flag"].astype(int), valid.get("repo_predicted_score")),
+        "Correlation-Weighted": (valid["corr_weighted_flag"].astype(int), valid.get("corr_weighted_score")),
+        "Random Forest": (valid["ml_predicted_flag"].astype(int), valid.get("ml_predicted_proba")),
+        "Majority Vote (Ensemble)": (valid["ensemble_predicted_flag"].astype(int), ensemble_vote_count),
     }
 
     all_metrics = {}
-    for name, y_pred in methods.items():
-        all_metrics[name] = compute_metrics(y_true, y_pred)
+    for name, (y_pred, y_score) in methods.items():
+        all_metrics[name] = compute_metrics(y_true, y_pred, y_score)
 
     # Radar chart
     st.subheader("Performance Radar")
@@ -1709,9 +1732,10 @@ def render_verdict(df: pd.DataFrame):
         "repos, what % did we correctly identify as non-hackathon (recall for the negative class)."
     )
     categories = ["Accuracy", "Precision", "Recall", "F1", "Specificity"]
+    table_columns = ["Accuracy", "Precision", "Recall", "F1", "Specificity", "AUC-ROC", "MCC"]
 
     fig_radar = go.Figure()
-    dashes = ["solid", "dash", "dot"]
+    dashes = ["solid", "dash", "dot", "dashdot"]
     for idx, (name, metrics) in enumerate(all_metrics.items()):
         values = [metrics[c] for c in categories] + [metrics[categories[0]]]
         fig_radar.add_trace(
@@ -1749,9 +1773,9 @@ def render_verdict(df: pd.DataFrame):
         "**Top-right** = repos wrongly called 'hackathon' (false alarms). "
         "**Bottom-left** = real hackathon repos that were missed. Bigger numbers on the diagonal = better."
     )
-    cols = st.columns(3)
-    color_scales = ["Oranges", "Purples", "Greens"]
-    for idx, (name, y_pred) in enumerate(methods.items()):
+    cols = st.columns(4)
+    color_scales = ["Oranges", "Purples", "Greens", "RdPu"]
+    for idx, (name, (y_pred, _)) in enumerate(methods.items()):
         with cols[idx]:
             f1 = all_metrics[name]["F1"]
             fig = plot_confusion_matrix(y_true, y_pred, f"{name}\nF1={f1:.1%}", color_scales[idx])
@@ -1762,18 +1786,21 @@ def render_verdict(df: pd.DataFrame):
     # Metrics table
     st.subheader("Metrics Summary")
     metrics_table = pd.DataFrame(all_metrics).T
-    metrics_table = metrics_table[categories]
+    metrics_table = metrics_table[table_columns]
+    metrics_table.index.name = "Method"
 
     # Style the table
     def highlight_best(s):
-        is_max = s == s.max()
+        is_max = s == s.nanmax() if hasattr(s, "nanmax") else s == s.max()
         return ["background-color: #f3f7ea; font-weight: bold; color: #5a8020" if v else "" for v in is_max]
 
-    styled = metrics_table.style.format("{:.1%}").apply(highlight_best)
+    styled = metrics_table.style.format("{:.1%}", na_rep="—").apply(highlight_best)
     st.dataframe(styled, use_container_width=True, height=160)
     st.caption(
-        "Highlighted cells show the best score per column. **F1 score** matters most here because "
-        "we want to balance catching hackathon repos (recall) without too many false alarms (precision)."
+        "Highlighted cells show the best score per column. "
+        "**AUC-ROC** measures ranking quality using probability scores (higher = better separation). "
+        "**MCC** (Matthews Correlation Coefficient, rescaled 0–1) is robust to class imbalance — 1.0 is perfect, 0.5 is random. "
+        "**F1** balances catching hackathon repos (recall) vs. false alarms (precision)."
     )
 
     st.markdown("---")
@@ -2432,7 +2459,7 @@ def render_predict():
             "2. Statistical Weighting",
             corr["flag"],
             f"Score: {corr['score']:.2f}",
-            "Threshold: 0.5",
+            f"Threshold: {CORR_THRESHOLD}",
             SDSC_BLUE,
             "#eef0f8",
             "#e1e4f0",
