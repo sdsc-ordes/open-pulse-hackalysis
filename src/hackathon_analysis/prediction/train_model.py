@@ -89,7 +89,7 @@ def train_and_save(
 
     # --- Method 2: Correlation Weights ---
     log.info("Training correlation weights...")
-    corr_weights = train_correlation_weights(valid, features, target=target)
+    corr_weights = train_correlation_weights(valid, features, target=target, threshold=0.65)
     corr_path = models_dir / "correlation_weights.json"
     with open(corr_path, "w") as f:
         json.dump(corr_weights.to_dict(), f, indent=2)

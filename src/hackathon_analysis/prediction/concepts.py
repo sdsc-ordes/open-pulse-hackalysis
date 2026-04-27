@@ -109,7 +109,6 @@ def build_repo_text(row: dict, max_chars: int = DEFAULT_MAX_CHARS) -> str:
     parts = [
         row.get("repo_name") or row.get("repo") or row.get("name_with_owner"),
         row.get("description"),
-        row.get("primary_language"),
     ]
 
     topics = _coerce_string_list(row.get("topics") or row.get("repo_topics"))
@@ -135,7 +134,7 @@ def extract_concepts_for_repo(row: dict, login_info: dict) -> dict:
     """Extract concepts for a single repo row.
 
     Returns dict with:
-    - n_concepts (int)
+    - repo_concepts (list[dict]): raw API response
     - repo_concept_names (list[str])
     - repo_top_concept (str | None)
     - repo_concepts_error (str | None)
@@ -145,7 +144,7 @@ def extract_concepts_for_repo(row: dict, login_info: dict) -> dict:
     text = build_repo_text(row)
     if not text.strip():
         return {
-            "n_concepts": 0,
+            "repo_concepts": [],
             "repo_concept_names": [],
             "repo_top_concept": None,
             "repo_concepts_error": "empty_text",
@@ -162,7 +161,7 @@ def extract_concepts_for_repo(row: dict, login_info: dict) -> dict:
     except Exception as e:
         log.warning("Concept extraction failed: %s", e)
         return {
-            "n_concepts": 0,
+            "repo_concepts": [],
             "repo_concept_names": [],
             "repo_top_concept": None,
             "repo_concepts_error": str(e),
@@ -174,7 +173,7 @@ def extract_concepts_for_repo(row: dict, login_info: dict) -> dict:
     ]
 
     return {
-        "n_concepts": len(concept_names),
+        "repo_concepts": concepts,
         "repo_concept_names": concept_names,
         "repo_top_concept": concept_names[0] if concept_names else None,
         "repo_concepts_error": None,
@@ -190,11 +189,11 @@ def try_enrich_with_concepts(row: dict) -> dict:
     """Attempt to enrich a repo row with EPFL concepts.
 
     Returns a dict with concept fields. If anything fails (no credentials,
-    API down, import error), returns default values with n_concepts=0.
+    API down, import error), returns default values with empty concepts.
     This function NEVER raises — it always falls back gracefully.
     """
     defaults = {
-        "n_concepts": 0,
+        "repo_concepts": [],
         "repo_concept_names": [],
         "repo_top_concept": None,
         "repo_concepts_error": "not_attempted",
@@ -207,7 +206,7 @@ def try_enrich_with_concepts(row: dict) -> dict:
             return defaults
 
         result = extract_concepts_for_repo(row, login_info)
-        log.info("Extracted %d concepts for repo", result["n_concepts"])
+        log.info("Extracted %d concepts for repo", len(result["repo_concept_names"]))
         return result
 
     except Exception as e:

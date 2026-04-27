@@ -193,7 +193,8 @@ def predict_repo(
     if enrich_concepts:
         row_dict = raw_df.iloc[0].to_dict()
         concept_result = try_enrich_with_concepts(row_dict)
-        raw_df["n_concepts"] = concept_result["n_concepts"]
+        raw_df["repo_concepts"] = [concept_result["repo_concepts"]]
+        raw_df["n_concepts"] = len(concept_result["repo_concepts"])
         raw_df["repo_concept_names"] = [concept_result["repo_concept_names"]]
         raw_df["repo_top_concept"] = concept_result["repo_top_concept"]
         raw_df["repo_concepts_error"] = concept_result["repo_concepts_error"]
