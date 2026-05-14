@@ -832,17 +832,17 @@ def render_introduction(df: pd.DataFrame):
         "Source": [
             "LauzHack-linked repositories (2023–2025)",
             "Random user account repositories (control)",
-            "**Total**",
+            "<b>Total</b>",
         ],
         "Count": [
             lauzhack_total,
             control_total,
-            f"**{total_all}**",
+            f"<b>{total_all}</b>",
         ],
         "Valid with Complete Metadata": [
             lauzhack_valid,
             control_valid,
-            f"**{total_valid} ({completeness_pct:.0f}%)**",
+            f"<b>{total_valid} ({completeness_pct:.0f}%)</b>",
         ],
     })
 
