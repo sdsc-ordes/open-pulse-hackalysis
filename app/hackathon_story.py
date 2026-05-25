@@ -691,10 +691,7 @@ def render_introduction(df: pd.DataFrame):
         Can You Tell a Hackathon Repo from a Regular One?
     </h1>
     <p style='text-align:center; color:#64748b; font-size:1.15rem; max-width:800px; margin:auto;'>
-        Not all repositories linked to hackathon project pages are actual hackathon code.
-        Some are pre-existing libraries, framework forks, or personal utilities.
-        We built a general-purpose pipeline to identify <b>true hackathon repos</b> &mdash;
-        and validated it on <b>LauzHack</b> (2023&ndash;2025) as our case study.
+        Hackalysis is an automated analytical pipeline that classifies and tags repository types within the Open Pulse knowledge graph. While many project pages include pre-existing libraries or framework forks, Hackalysis evaluates structural hygiene and temporal characteristics to identify authentic, event-origin codebase prototypes.
     </p>
     <p style='text-align:center; color:#94a3b8; font-size:0.9rem; margin-top:8px;'>
         The methodology is hackathon-agnostic; LauzHack-specific details are clearly marked throughout.
@@ -730,42 +727,7 @@ def render_introduction(df: pd.DataFrame):
     linked = int(df["is_linked_project"].sum())
     true_hack = int(df["true_hackathon_repos"].sum())
 
-    dq_col, label_col = st.columns(2)
-
-    with dq_col:
-        st.subheader("Data Pipeline")
-        st.caption(
-            "From raw collection to usable data. Some repos were deleted or private "
-            "and couldn't be fetched. Of those with valid metadata, a subset were "
-            "confirmed as actual hackathon code."
-        )
-
-        true_hack_with_metadata = int(
-            (df["true_hackathon_repos"] & df["has_valid_metadata"]).sum()
-        )
-        pipeline_data = pd.DataFrame(
-            {
-                "Stage": [
-                    "All Repositories Collected",
-                    "Have Valid GitHub Metadata",
-                    "Confirmed Hackathon (with metadata)",
-                ],
-                "Count": [total, with_metadata, true_hack_with_metadata],
-            }
-        )
-
-        fig_pipeline = px.funnel(
-            pipeline_data,
-            x="Count",
-            y="Stage",
-            color_discrete_sequence=[SDSC_BLUE],
-        )
-        fig_pipeline.update_layout(
-            height=300, margin=dict(l=20, r=20, t=20, b=20),
-            paper_bgcolor="white",
-        )
-        fig_pipeline.update_traces(textinfo="value+percent initial", textfont_size=14)
-        st.plotly_chart(fig_pipeline, use_container_width=True)
+    label_col, dq_col = st.columns(2)
 
     with label_col:
         st.subheader("Ground Truth Labels")
@@ -802,11 +764,46 @@ def render_introduction(df: pd.DataFrame):
             height=300, margin=dict(l=20, r=20, t=20, b=20),
             paper_bgcolor="white",
             yaxis_title="",
-            xaxis_title="Number of Repositories",
+            xaxis_title=f"Number of Repositories out of {total} Repositories",
             showlegend=False,
         )
         fig_labels.update_traces(textposition="outside", textfont_size=14)
         st.plotly_chart(fig_labels, use_container_width=True)
+
+    with dq_col:
+        st.subheader("Data Pipeline")
+        st.caption(
+            "From raw collection to usable data. Some repos were deleted or private "
+            "and couldn't be fetched. Of those with valid metadata, a subset were "
+            "confirmed as actual hackathon code."
+        )
+
+        true_hack_with_metadata = int(
+            (df["true_hackathon_repos"] & df["has_valid_metadata"]).sum()
+        )
+        pipeline_data = pd.DataFrame(
+            {
+                "Stage": [
+                    "All Repositories Collected",
+                    "Have Valid GitHub Metadata",
+                    "Confirmed Hackathon (with metadata)",
+                ],
+                "Count": [total, with_metadata, true_hack_with_metadata],
+            }
+        )
+
+        fig_pipeline = px.funnel(
+            pipeline_data,
+            x="Count",
+            y="Stage",
+            color_discrete_sequence=[SDSC_BLUE],
+        )
+        fig_pipeline.update_layout(
+            height=300, margin=dict(l=20, r=20, t=20, b=20),
+            paper_bgcolor="white",
+        )
+        fig_pipeline.update_traces(textinfo="value+percent initial", textfont_size=14)
+        st.plotly_chart(fig_pipeline, use_container_width=True)
 
     # Data Source Breakdown: LauzHack vs Control Repos
     st.markdown("---")
@@ -831,7 +828,7 @@ def render_introduction(df: pd.DataFrame):
     source_data = pd.DataFrame({
         "Source": [
             "LauzHack-linked repositories (2023–2025)",
-            "Random user account repositories (control)",
+            "Curated user account repositories (control)",
             "<b>Total</b>",
         ],
         "Count": [
@@ -916,6 +913,81 @@ def render_introduction(df: pd.DataFrame):
         f"Overall, **{completeness_pct:.0f}% of all repositories** have valid, complete GitHub metadata."
     )
 
+    st.markdown("---")
+
+    # Hackathon vs Non-Hackathon distribution — all repos vs valid metadata
+    st.markdown("### Hackathon vs Non-Hackathon Distribution")
+    st.caption(
+        "Comparing the label split across all collected repos vs only those with valid GitHub metadata."
+    )
+
+    valid_df = df[df["has_valid_metadata"]]
+    all_hack = int(df["true_hackathon_repos"].sum())
+    all_non_hack = len(df) - all_hack
+    valid_hack = int(valid_df["true_hackathon_repos"].sum())
+    valid_non_hack = len(valid_df) - valid_hack
+
+    dist_data = pd.DataFrame({
+        "Dataset": [f"All Repos (n={len(df)})", f"All Repos (n={len(df)})",
+                    f"Valid Metadata (n={len(valid_df)})", f"Valid Metadata (n={len(valid_df)})"],
+        "Label": ["Hackathon", "Non-Hackathon", "Hackathon", "Non-Hackathon"],
+        "Count": [all_hack, all_non_hack, valid_hack, valid_non_hack],
+    })
+    dist_data["Percent"] = dist_data.groupby("Dataset")["Count"].transform(
+        lambda x: (x / x.sum() * 100).round(1)
+    )
+    dist_data["Text"] = dist_data.apply(lambda r: f"{r['Count']} ({r['Percent']}%)", axis=1)
+
+    fig_dist = px.bar(
+        dist_data,
+        x="Count",
+        y="Dataset",
+        color="Label",
+        orientation="h",
+        text="Text",
+        color_discrete_map={"Hackathon": HACKATHON_COLOR, "Non-Hackathon": NON_HACKATHON_COLOR},
+        barmode="stack",
+    )
+    fig_dist.update_traces(textposition="inside", insidetextanchor="middle", textfont_size=13)
+    fig_dist.update_layout(
+        height=200,
+        margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="white",
+        xaxis_title="Number of Repositories",
+        yaxis_title="",
+        legend_title="",
+        hovermode="y unified",
+    )
+    st.plotly_chart(fig_dist, use_container_width=True)
+
+    st.markdown("---")
+
+    st.subheader("Language Landscape")
+    st.caption(
+        "Programming languages used across repositories. Shows whether hackathon projects "
+        "favor different languages (e.g., more Python for quick prototyping)."
+    )
+    lang_df = df.copy()
+    lang_df["primary_language"] = lang_df["primary_language"].fillna("Unknown").replace("", "Unknown")
+    lang_df["label"] = lang_df["true_hackathon_repos"].map({True: "Hackathon", False: "Non-Hackathon"})
+
+    lang_counts = (
+        lang_df.groupby(["primary_language", "label"]).size().reset_index(name="count")
+    )
+    top_langs = lang_counts.groupby("primary_language")["count"].sum().nlargest(12).index
+    lang_counts = lang_counts[lang_counts["primary_language"].isin(top_langs)]
+
+    fig_lang = px.treemap(
+        lang_counts,
+        path=["label", "primary_language"],
+        values="count",
+        color="label",
+        color_discrete_map={"Hackathon": HACKATHON_COLOR, "Non-Hackathon": NON_HACKATHON_COLOR},
+    )
+    fig_lang.update_layout(height=450, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="white")
+    fig_lang.update_traces(textinfo="label+value", textfont_size=13)
+    st.plotly_chart(fig_lang, use_container_width=True)
+
     # LauzHack projects vs repositories
     st.markdown("---")
     st.markdown("### LauzHack Repositories by Year")
@@ -987,34 +1059,6 @@ def render_introduction(df: pd.DataFrame):
         hovermode="x unified",
     )
     st.plotly_chart(fig_repos, use_container_width=True)
-
-    st.markdown("---")
-
-    st.subheader("Language Landscape")
-    st.caption(
-        "Programming languages used across repositories. Shows whether hackathon projects "
-        "favor different languages (e.g., more Python for quick prototyping)."
-    )
-    lang_df = df.copy()
-    lang_df["primary_language"] = lang_df["primary_language"].fillna("Unknown").replace("", "Unknown")
-    lang_df["label"] = lang_df["true_hackathon_repos"].map({True: "Hackathon", False: "Non-Hackathon"})
-
-    lang_counts = (
-        lang_df.groupby(["primary_language", "label"]).size().reset_index(name="count")
-    )
-    top_langs = lang_counts.groupby("primary_language")["count"].sum().nlargest(12).index
-    lang_counts = lang_counts[lang_counts["primary_language"].isin(top_langs)]
-
-    fig_lang = px.treemap(
-        lang_counts,
-        path=["label", "primary_language"],
-        values="count",
-        color="label",
-        color_discrete_map={"Hackathon": HACKATHON_COLOR, "Non-Hackathon": NON_HACKATHON_COLOR},
-    )
-    fig_lang.update_layout(height=450, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="white")
-    fig_lang.update_traces(textinfo="label+value", textfont_size=13)
-    st.plotly_chart(fig_lang, use_container_width=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2441,7 +2485,7 @@ def render_predict():
         st.caption("🏷️ Concept enrichment skipped — check the box above to enable")
 
     # Method-by-method results
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         _render_method_card(
@@ -2474,6 +2518,17 @@ def render_predict():
             SDSC_GREEN,
             "#f3f7ea",
             "#e6edcc",
+        )
+
+    with col4:
+        _render_method_card(
+            "4. Majority Vote (Ensemble)",
+            votes >= 2,
+            f"Votes: {votes}/3",
+            "≥2 methods must agree",
+            ROSE,
+            "#fef2f2",
+            "#fde8e8",
         )
 
     # Signal breakdown
