@@ -291,34 +291,71 @@ def load_predictions() -> pd.DataFrame:
 
     else:
         # Path 2: Hugging Face Hub (primary for production)
-        logging.info("📡 Local file not found, loading from Hugging Face Hub...")
+        import os as _os
+        from huggingface_hub import HfApi, hf_hub_download
+
+        repo = get_hf_repo_from_env()
+        token = _os.getenv("HF_TOKEN")
+        logging.info("📡 Loading from Hugging Face Hub: %s", repo.repo_id)
+
+        df = None
+
+        # Stage A: standard datasets library (works when repo has a proper dataset card)
         try:
-            repo = get_hf_repo_from_env()
-            logging.info("   HF_REPO_ID: %s", repo.repo_id)
-
-            try:
-                hf_dataset = load_huggingface_dataset(repo_id=repo.repo_id, split="train")
-            except Exception:
-                # Fallback: load all splits and pick the first available
-                dataset_dict = load_huggingface_dataset(repo_id=repo.repo_id, split=None)
-                first_split = next(iter(dataset_dict))
-                logging.info("   'train' split not found; using split '%s'", first_split)
-                hf_dataset = dataset_dict[first_split]
-
+            hf_dataset = load_huggingface_dataset(repo_id=repo.repo_id, split="train")
             df = hf_dataset.to_pandas()
-            logging.info("✓ Loaded %d repos from Hugging Face Hub", len(df))
+            logging.info("✓ Loaded via load_dataset split='train': %d rows", len(df))
+        except Exception as e_a:
+            logging.info("Stage A failed (%s), trying data_files fallback", e_a)
 
-        except Exception as hf_error:
-            logging.error(
-                "Data loading failed: local=%s missing, HF=%s",
-                local_csv.exists(),
-                str(hf_error),
-            )
-            raise RuntimeError(
-                f"Could not load data from Hugging Face Hub "
-                f"(repo: {get_hf_repo_from_env().repo_id}). "
-                f"Error: {hf_error}"
-            ) from hf_error
+        # Stage B: explicit data_files pointing at the data/ directory CSV
+        if df is None:
+            try:
+                hf_dataset = load_huggingface_dataset(
+                    repo_id=repo.repo_id,
+                    split="train",
+                    data_files="data/repo_metadata_with_predictions.csv",
+                )
+                df = hf_dataset.to_pandas()
+                logging.info("✓ Loaded via data_files CSV: %d rows", len(df))
+            except Exception as e_b:
+                logging.info("Stage B failed (%s), trying direct download fallback", e_b)
+
+        # Stage C: direct file download via huggingface_hub — works regardless of dataset card
+        if df is None:
+            try:
+                api = HfApi()
+                all_files = list(api.list_repo_files(
+                    repo_id=repo.repo_id, repo_type=repo.repo_type, token=token
+                ))
+                csv_files = [
+                    f for f in all_files
+                    if f.endswith(".csv") and "prediction" in f.lower()
+                ] or [f for f in all_files if f.endswith(".csv")]
+
+                if not csv_files:
+                    raise RuntimeError(
+                        f"No CSV files found in repo '{repo.repo_id}'. "
+                        f"Available files: {all_files[:15]}"
+                    )
+
+                target_file = csv_files[0]
+                logging.info("   Downloading: %s", target_file)
+                local_path = hf_hub_download(
+                    repo_id=repo.repo_id,
+                    filename=target_file,
+                    repo_type=repo.repo_type,
+                    token=token,
+                )
+                df = pd.read_csv(local_path)
+                logging.info("✓ Loaded via hf_hub_download: %d rows", len(df))
+            except Exception as e_c:
+                raise RuntimeError(
+                    f"All three loading strategies failed for repo '{repo.repo_id}'.\n"
+                    f"Stage C error: {e_c}\n"
+                    f"Check that HF_REPO_ID and (if private) HF_TOKEN are set in "
+                    f"Streamlit Cloud Secrets."
+                ) from e_c
 
     # Parse stringified lists
     for col in ["concept_list", "repo_concept_names", "concept_project_freq_buckets", "topics"]:
