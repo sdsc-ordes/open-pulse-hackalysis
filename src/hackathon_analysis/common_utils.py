@@ -105,3 +105,72 @@ def load_huggingface_dataset(
     load_args.update(kwargs)
 
     return load_dataset(**load_args)
+
+
+def load_predictions_from_hf(repo_id: str, repo_type: str = "dataset") -> "pd.DataFrame":
+    """Load the predictions CSV from a HF Hub dataset repo using a three-stage fallback.
+
+    Stages tried in order:
+      A) datasets.load_dataset(repo_id, split="train")  — works when a dataset card exists
+      B) load_dataset with data_files="data/repo_metadata_with_predictions.csv"
+         — works when data is stored as a raw CSV under data/
+      C) huggingface_hub.hf_hub_download of the first *prediction*.csv in the repo
+         — last resort, bypasses datasets entirely
+
+    Returns a pandas DataFrame. Raises RuntimeError (with diagnostic detail) if all
+    three stages fail.
+    """
+    import logging
+    import pandas as pd
+    from huggingface_hub import HfApi, hf_hub_download
+
+    token = os.getenv("HF_TOKEN")
+
+    # Stage A: standard split load — fastest when dataset card is present
+    try:
+        ds = load_huggingface_dataset(repo_id=repo_id, split="train")
+        df = ds.to_pandas()
+        logging.info("HF Stage A: loaded %d rows via split='train'", len(df))
+        return df
+    except Exception as e_a:
+        logging.info("HF Stage A failed: %s", e_a)
+
+    # Stage B: explicit data_files — works for raw CSVs in the data/ folder
+    try:
+        ds = load_huggingface_dataset(
+            repo_id=repo_id,
+            split="train",
+            data_files="data/repo_metadata_with_predictions.csv",
+        )
+        df = ds.to_pandas()
+        logging.info("HF Stage B: loaded %d rows via data_files", len(df))
+        return df
+    except Exception as e_b:
+        logging.info("HF Stage B failed: %s", e_b)
+
+    # Stage C: direct file download — most explicit, bypasses dataset card entirely
+    try:
+        api = HfApi()
+        all_files = list(api.list_repo_files(repo_id=repo_id, repo_type=repo_type, token=token))
+        csv_files = (
+            [f for f in all_files if f.endswith(".csv") and "prediction" in f.lower()]
+            or [f for f in all_files if f.endswith(".csv")]
+        )
+        if not csv_files:
+            raise FileNotFoundError(
+                f"No CSV files found in '{repo_id}'. Available: {all_files[:15]}"
+            )
+        target = csv_files[0]
+        logging.info("HF Stage C: downloading '%s'", target)
+        local_path = hf_hub_download(
+            repo_id=repo_id, filename=target, repo_type=repo_type, token=token
+        )
+        df = pd.read_csv(local_path)
+        logging.info("HF Stage C: loaded %d rows", len(df))
+        return df
+    except Exception as e_c:
+        raise RuntimeError(
+            f"All three HF loading strategies failed for repo '{repo_id}'.\n"
+            f"Stage C error: {e_c}\n"
+            f"Ensure HF_REPO_ID is set correctly and HF_TOKEN is set if the repo is private."
+        ) from e_c

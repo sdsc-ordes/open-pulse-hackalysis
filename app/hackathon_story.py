@@ -25,7 +25,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score, matthews_corrcoef
 import streamlit as st
 
-from hackathon_analysis.common_utils import load_huggingface_dataset
+from hackathon_analysis.common_utils import load_huggingface_dataset, load_predictions_from_hf
 from hackathon_analysis.data_extraction.dataset_resolver import get_hf_repo_from_env
 
 # ---------------------------------------------------------------------------
@@ -291,71 +291,12 @@ def load_predictions() -> pd.DataFrame:
 
     else:
         # Path 2: Hugging Face Hub (primary for production)
-        import os as _os
-        from huggingface_hub import HfApi, hf_hub_download
-
         repo = get_hf_repo_from_env()
-        token = _os.getenv("HF_TOKEN")
         logging.info("📡 Loading from Hugging Face Hub: %s", repo.repo_id)
-
-        df = None
-
-        # Stage A: standard datasets library (works when repo has a proper dataset card)
         try:
-            hf_dataset = load_huggingface_dataset(repo_id=repo.repo_id, split="train")
-            df = hf_dataset.to_pandas()
-            logging.info("✓ Loaded via load_dataset split='train': %d rows", len(df))
-        except Exception as e_a:
-            logging.info("Stage A failed (%s), trying data_files fallback", e_a)
-
-        # Stage B: explicit data_files pointing at the data/ directory CSV
-        if df is None:
-            try:
-                hf_dataset = load_huggingface_dataset(
-                    repo_id=repo.repo_id,
-                    split="train",
-                    data_files="data/repo_metadata_with_predictions.csv",
-                )
-                df = hf_dataset.to_pandas()
-                logging.info("✓ Loaded via data_files CSV: %d rows", len(df))
-            except Exception as e_b:
-                logging.info("Stage B failed (%s), trying direct download fallback", e_b)
-
-        # Stage C: direct file download via huggingface_hub — works regardless of dataset card
-        if df is None:
-            try:
-                api = HfApi()
-                all_files = list(api.list_repo_files(
-                    repo_id=repo.repo_id, repo_type=repo.repo_type, token=token
-                ))
-                csv_files = [
-                    f for f in all_files
-                    if f.endswith(".csv") and "prediction" in f.lower()
-                ] or [f for f in all_files if f.endswith(".csv")]
-
-                if not csv_files:
-                    raise RuntimeError(
-                        f"No CSV files found in repo '{repo.repo_id}'. "
-                        f"Available files: {all_files[:15]}"
-                    )
-
-                target_file = csv_files[0]
-                logging.info("   Downloading: %s", target_file)
-                local_path = hf_hub_download(
-                    repo_id=repo.repo_id,
-                    filename=target_file,
-                    repo_type=repo.repo_type,
-                    token=token,
-                )
-                df = pd.read_csv(local_path)
-                logging.info("✓ Loaded via hf_hub_download: %d rows", len(df))
-            except Exception as e_c:
-                raise RuntimeError(
-                    f"All three loading strategies failed for repo '{repo.repo_id}'.\n"
-                    f"Stage C error: {e_c}\n"
-                    f"Check that HF_REPO_ID and (if private) HF_TOKEN are set in "
-                    f"Streamlit Cloud Secrets."
-                ) from e_c
+            df = load_predictions_from_hf(repo_id=repo.repo_id, repo_type=repo.repo_type)
+        except RuntimeError as hf_error:
+            raise RuntimeError(str(hf_error)) from hf_error
 
     # Parse stringified lists
     for col in ["concept_list", "repo_concept_names", "concept_project_freq_buckets", "topics"]:
