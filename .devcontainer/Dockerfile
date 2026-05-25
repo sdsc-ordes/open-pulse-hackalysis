@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
 
 # Create non-root user for VS Code
 RUN useradd -ms /bin/bash -u 1000 vscode \
-    && echo "vscode ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+    && echo "vscode ALL=(ALL) ALL" >> /etc/sudoers
 
 # Gemini CLI
 # Login outside the container and copy your credentials to ~/.gemini if needed.

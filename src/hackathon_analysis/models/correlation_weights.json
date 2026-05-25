@@ -19,7 +19,7 @@
     "is_fork": -0.36801625550098965,
     "issues_open": -0.1105865341324039,
     "issues_total": -0.11037163974501461,
-    "n_concepts": 0.006417850779040244,
+    "n_concepts": 0.004025758184637505,
     "pull_requests_closed": -0.18905873711091264,
     "pull_requests_open": -0.13868525043069999,
     "pull_requests_total": -0.16345730456087648,
@@ -89,7 +89,7 @@
     "stars": 21.0,
     "watchers": 4.0
   },
-  "threshold": 0.5,
-  "score_min": -2.6233096513339804,
-  "score_max": -0.032445828625023855
+  "threshold": 0.65,
+  "score_min": -2.6250671071176233,
+  "score_max": -0.0325927600556277
 }

@@ -19,6 +19,11 @@ from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 
+from huggingface_hub import hf_hub_download
+
+from hackathon_analysis.data_extraction.dataset_resolver import (
+    get_hf_repo_from_env,
+)
 from hackathon_analysis.data_extraction.github_extractor import (
     fetch_repo_metadata,
     parse_github_repo_url,
@@ -49,10 +54,55 @@ _cached_corr_weights: CorrelationWeights | None = None
 _cached_rf_model: TrainedRandomForest | None = None
 
 
+def _ensure_model_file_from_hf(models_dir: Path, filename: str) -> Path:
+    """Ensure a model file exists locally. If missing, download from HF Hub.
+
+    This implements a local-first pattern:
+    1. If file exists locally → use it
+    2. If missing → download from HF Hub → cache locally
+
+    Args:
+        models_dir: Local directory to cache models
+        filename: Model file name (e.g., "rf_model.pkl", "correlation_weights.json")
+
+    Returns:
+        Path to the model file (guaranteed to exist)
+
+    Raises:
+        FileNotFoundError: If file not found locally and HF download fails
+    """
+    models_dir.mkdir(parents=True, exist_ok=True)
+    local_path = models_dir / filename
+
+    # Local-first: if file exists, use it
+    if local_path.exists():
+        log.debug("Using local model file: %s", local_path)
+        return local_path
+
+    # Fallback: download from HF Hub
+    log.info("Model file not found locally (%s), downloading from Hugging Face...", filename)
+    try:
+        repo = get_hf_repo_from_env()
+        downloaded_path = hf_hub_download(
+            repo_id=repo.repo_id,
+            repo_type=repo.repo_type,
+            filename=f"models/{filename}",
+            local_dir=str(models_dir.parent.parent),  # Download to project root
+            local_dir_use_symlinks=False,
+        )
+        log.info("Successfully downloaded %s from Hugging Face", filename)
+        return Path(downloaded_path)
+    except Exception as e:
+        raise FileNotFoundError(
+            f"Model file '{filename}' not found locally and could not be downloaded from HF: {e}"
+        ) from e
+
+
 def _load_correlation_weights(models_dir: Path = MODELS_DIR) -> CorrelationWeights:
     global _cached_corr_weights
     if _cached_corr_weights is None:
-        path = models_dir / "correlation_weights.json"
+        # Ensure file exists locally (download from HF if needed)
+        path = _ensure_model_file_from_hf(models_dir, "correlation_weights.json")
         with open(path) as f:
             _cached_corr_weights = CorrelationWeights.from_dict(json.load(f))
     return _cached_corr_weights
@@ -61,7 +111,9 @@ def _load_correlation_weights(models_dir: Path = MODELS_DIR) -> CorrelationWeigh
 def _load_rf_model(models_dir: Path = MODELS_DIR) -> TrainedRandomForest:
     global _cached_rf_model
     if _cached_rf_model is None:
-        _cached_rf_model = TrainedRandomForest.load(models_dir / "rf_model.pkl")
+        # Ensure file exists locally (download from HF if needed)
+        path = _ensure_model_file_from_hf(models_dir, "rf_model.pkl")
+        _cached_rf_model = TrainedRandomForest.load(path)
     return _cached_rf_model
 
 
@@ -141,7 +193,8 @@ def predict_repo(
     if enrich_concepts:
         row_dict = raw_df.iloc[0].to_dict()
         concept_result = try_enrich_with_concepts(row_dict)
-        raw_df["n_concepts"] = concept_result["n_concepts"]
+        raw_df["repo_concepts"] = [concept_result["repo_concepts"]]
+        raw_df["n_concepts"] = len(concept_result["repo_concepts"])
         raw_df["repo_concept_names"] = [concept_result["repo_concept_names"]]
         raw_df["repo_top_concept"] = concept_result["repo_top_concept"]
         raw_df["repo_concepts_error"] = concept_result["repo_concepts_error"]

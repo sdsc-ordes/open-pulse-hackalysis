@@ -22,14 +22,24 @@ from plotly.subplots import make_subplots
 from scipy.stats import fisher_exact
 from statsmodels.stats.multitest import multipletests
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score, roc_auc_score, matthews_corrcoef
 import streamlit as st
+
+from hackathon_analysis.common_utils import load_huggingface_dataset, load_predictions_from_hf
+from hackathon_analysis.data_extraction.dataset_resolver import get_hf_repo_from_env
 
 # ---------------------------------------------------------------------------
 # Configuration & Constants
 # ---------------------------------------------------------------------------
 
 DATA_ROOT = Path(__file__).resolve().parent.parent / "data"
+
+# Read correlation threshold from saved model so it stays in sync with training
+_corr_weights_path = Path(__file__).resolve().parent.parent / "src/hackathon_analysis/models/correlation_weights.json"
+try:
+    CORR_THRESHOLD = json.load(open(_corr_weights_path)).get("threshold", 0.65)
+except Exception:
+    CORR_THRESHOLD = 0.65
 
 # Color palette — SDSC brand: lime green, indigo blue, dark navy
 SDSC_GREEN = "#90ca42"     # Primary brand — lime green
@@ -49,9 +59,74 @@ SLATE_LIGHT = "#64748b"    # Muted text
 HACKATHON_COLOR = SDSC_GREEN
 NON_HACKATHON_COLOR = SDSC_BLUE
 METHOD_COLORS = {
-    "Naive Rule-Based": "#e8a838",    # Warm amber
-    "Correlation-Weighted": SDSC_BLUE,  # Brand blue
-    "Random Forest": SDSC_GREEN,        # Brand green
+    "Naive Rule-Based": "#e8a838",         # Warm amber
+    "Correlation-Weighted": SDSC_BLUE,     # Brand blue
+    "Random Forest": SDSC_GREEN,           # Brand green
+    "Majority Vote (Ensemble)": "#9b59b6", # Purple
+}
+
+# Feature metadata for dashboard display
+FEATURE_METADATA = {
+    "Days with Code Changes": {
+        "definition": "How many days elapsed between the first and last commit. Hackathon projects typically have short, intense development windows.",
+        "is_derived": True,
+        "calculation": "Calculated as: (last_commit_date − first_commit_date)",
+    },
+    "Repository Age (Days)": {
+        "definition": "How many days the repository has existed. Shows whether a project is brand new or has been around for a while.",
+        "is_derived": True,
+        "calculation": "Calculated as: (pushed_at − created_at)",
+    },
+    "README Length (characters)": {
+        "definition": "Size of the repository's README file. Hackathon repos often have shorter, quick-reference READMEs.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Number of Commits": {
+        "definition": "Total commits on the main branch. Indicates how much development work went into the project.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Repository Stars": {
+        "definition": "Number of GitHub stars (likes) a repository received. Popular projects attract more stars.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Number of Forks": {
+        "definition": "How many times the repository was forked. Shows how many people wanted to build on this project.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Number of Contributors": {
+        "definition": "How many different people contributed code. Hackathons typically involve teams of 2–5 people.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Total Issues": {
+        "definition": "Number of GitHub issues (bug reports, feature requests, discussions) ever opened.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Total Pull Requests": {
+        "definition": "Number of pull requests submitted. Shows collaboration and code review activity.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Total Files": {
+        "definition": "Count of all files in the repository. Larger projects have more files.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Total Directories": {
+        "definition": "Count of folders/directories. Complex projects organize code into more directories.",
+        "is_derived": False,
+        "calculation": None,
+    },
+    "Watchers": {
+        "definition": "Number of people watching the repository for updates. Similar to stars, shows interest level.",
+        "is_derived": False,
+        "calculation": None,
+    },
 }
 
 st.set_page_config(
@@ -192,7 +267,36 @@ def load_project_metadata() -> dict:
 
 @st.cache_data
 def load_predictions() -> pd.DataFrame:
-    df = pd.read_csv(DATA_ROOT / "repo_metadata_with_predictions.csv")
+    """Load predictions dataset from Hugging Face Hub (with local fallback for testing).
+
+    Loading priority:
+    1. Local CSV file (fallback, for testing/development)
+    2. Hugging Face Hub (primary)
+
+    Raises:
+        RuntimeError: If data cannot be loaded from either source with helpful guidance.
+    """
+    import logging
+    local_csv = DATA_ROOT / "repo_metadata_with_predictions.csv"
+
+    # Path 1: Local-first fallback (useful during testing)
+    if local_csv.exists():
+        logging.info("📂 Loading predictions from local file: %s", local_csv)
+        try:
+            df = pd.read_csv(local_csv)
+            logging.info("✓ Loaded %d repos from local CSV", len(df))
+        except Exception as e:
+            logging.error("Failed to read local CSV: %s", e)
+            raise RuntimeError(f"Failed to read local predictions CSV: {e}") from e
+
+    else:
+        # Path 2: Hugging Face Hub (primary for production)
+        repo = get_hf_repo_from_env()
+        logging.info("📡 Loading from Hugging Face Hub: %s", repo.repo_id)
+        try:
+            df = load_predictions_from_hf(repo_id=repo.repo_id, repo_type=repo.repo_type)
+        except RuntimeError as hf_error:
+            raise RuntimeError(str(hf_error)) from hf_error
 
     # Parse stringified lists
     for col in ["concept_list", "repo_concept_names", "concept_project_freq_buckets", "topics"]:
@@ -282,7 +386,8 @@ def compute_fisher_stats(df: pd.DataFrame) -> pd.DataFrame:
             continue
         table = np.array([[a, b], [c, d]])
         odds_ratio, p_value = fisher_exact(table)
-        log2_or = np.log2(odds_ratio) if odds_ratio > 0 else 0
+        # Cap odds ratio before log to avoid inf (concepts exclusive to one group)
+        log2_or = np.log2(min(odds_ratio, 1024)) if odds_ratio > 0 else 0
         lift = (a / max(n_hack, 1)) / (max((a + b), 1) / max(n_hack + n_non, 1))
         importance = -np.log10(max(p_value, 1e-300)) * np.sign(log2_or)
         rows.append(
@@ -359,6 +464,7 @@ def compute_rf_importances(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
         "year",
         "prediction_agreement",
         # Label leakers
+        "is_hackathon_year",
         "is_linked_project",
         "repo_predicted_score",
         "repo_predicted_flag",
@@ -538,14 +644,23 @@ def plot_confusion_matrix(y_true, y_pred, title="", color_scale="Teal"):
     return fig
 
 
-def compute_metrics(y_true, y_pred) -> dict:
-    return {
+def compute_metrics(y_true, y_pred, y_score=None) -> dict:
+    metrics = {
         "Accuracy": accuracy_score(y_true, y_pred),
         "Precision": precision_score(y_true, y_pred, zero_division=0),
         "Recall": recall_score(y_true, y_pred, zero_division=0),
         "F1": f1_score(y_true, y_pred, zero_division=0),
         "Specificity": recall_score(y_true, y_pred, pos_label=0, zero_division=0),
+        "MCC": (matthews_corrcoef(y_true, y_pred) + 1) / 2,  # rescaled to [0,1] for radar chart
     }
+    if y_score is not None:
+        try:
+            metrics["AUC-ROC"] = roc_auc_score(y_true, y_score)
+        except Exception:
+            metrics["AUC-ROC"] = float("nan")
+    else:
+        metrics["AUC-ROC"] = float("nan")
+    return metrics
 
 
 # ---------------------------------------------------------------------------
@@ -560,10 +675,7 @@ def render_introduction(df: pd.DataFrame):
         Can You Tell a Hackathon Repo from a Regular One?
     </h1>
     <p style='text-align:center; color:#64748b; font-size:1.15rem; max-width:800px; margin:auto;'>
-        Not all repositories linked to hackathon project pages are actual hackathon code.
-        Some are pre-existing libraries, framework forks, or personal utilities.
-        We built a general-purpose pipeline to identify <b>true hackathon repos</b> &mdash;
-        and validated it on <b>LauzHack</b> (2023&ndash;2025) as our case study.
+        Hackalysis is an automated analytical pipeline that classifies and tags repository types within the Open Pulse knowledge graph. While many project pages include pre-existing libraries or framework forks, Hackalysis evaluates structural hygiene and temporal characteristics to identify authentic, event-origin codebase prototypes.
     </p>
     <p style='text-align:center; color:#94a3b8; font-size:0.9rem; margin-top:8px;'>
         The methodology is hackathon-agnostic; LauzHack-specific details are clearly marked throughout.
@@ -599,42 +711,7 @@ def render_introduction(df: pd.DataFrame):
     linked = int(df["is_linked_project"].sum())
     true_hack = int(df["true_hackathon_repos"].sum())
 
-    dq_col, label_col = st.columns(2)
-
-    with dq_col:
-        st.subheader("Data Pipeline")
-        st.caption(
-            "From raw collection to usable data. Some repos were deleted or private "
-            "and couldn't be fetched. Of those with valid metadata, a subset were "
-            "confirmed as actual hackathon code."
-        )
-
-        true_hack_with_metadata = int(
-            (df["true_hackathon_repos"] & df["has_valid_metadata"]).sum()
-        )
-        pipeline_data = pd.DataFrame(
-            {
-                "Stage": [
-                    "All Repositories Collected",
-                    "Have Valid GitHub Metadata",
-                    "Confirmed Hackathon (with metadata)",
-                ],
-                "Count": [total, with_metadata, true_hack_with_metadata],
-            }
-        )
-
-        fig_pipeline = px.funnel(
-            pipeline_data,
-            x="Count",
-            y="Stage",
-            color_discrete_sequence=[SDSC_BLUE],
-        )
-        fig_pipeline.update_layout(
-            height=300, margin=dict(l=20, r=20, t=20, b=20),
-            paper_bgcolor="white",
-        )
-        fig_pipeline.update_traces(textinfo="value+percent initial", textfont_size=14)
-        st.plotly_chart(fig_pipeline, use_container_width=True)
+    label_col, dq_col = st.columns(2)
 
     with label_col:
         st.subheader("Ground Truth Labels")
@@ -671,13 +748,232 @@ def render_introduction(df: pd.DataFrame):
             height=300, margin=dict(l=20, r=20, t=20, b=20),
             paper_bgcolor="white",
             yaxis_title="",
-            xaxis_title="Number of Repositories",
+            xaxis_title=f"Number of Repositories out of {total} Repositories",
             showlegend=False,
         )
         fig_labels.update_traces(textposition="outside", textfont_size=14)
         st.plotly_chart(fig_labels, use_container_width=True)
 
+    with dq_col:
+        st.subheader("Data Pipeline")
+        st.caption(
+            "From raw collection to usable data. Some repos were deleted or private "
+            "and couldn't be fetched. Of those with valid metadata, a subset were "
+            "confirmed as actual hackathon code."
+        )
+
+        true_hack_with_metadata = int(
+            (df["true_hackathon_repos"] & df["has_valid_metadata"]).sum()
+        )
+        pipeline_data = pd.DataFrame(
+            {
+                "Stage": [
+                    "All Repositories Collected",
+                    "Have Valid GitHub Metadata",
+                    "Confirmed Hackathon (with metadata)",
+                ],
+                "Count": [total, with_metadata, true_hack_with_metadata],
+            }
+        )
+
+        fig_pipeline = px.funnel(
+            pipeline_data,
+            x="Count",
+            y="Stage",
+            color_discrete_sequence=[SDSC_BLUE],
+        )
+        fig_pipeline.update_layout(
+            height=300, margin=dict(l=20, r=20, t=20, b=20),
+            paper_bgcolor="white",
+        )
+        fig_pipeline.update_traces(textinfo="value+percent initial", textfont_size=14)
+        st.plotly_chart(fig_pipeline, use_container_width=True)
+
+    # Data Source Breakdown: LauzHack vs Control Repos
+    st.markdown("---")
+    st.markdown("### Data Source & Metadata Quality")
+
+    # Calculate source breakdown
+    has_project_key = df["project_foreign_key"].fillna("").str.strip().ne("")
+    lauzhack_repos = df[has_project_key]
+    control_repos = df[~has_project_key]
+
+    lauzhack_total = len(lauzhack_repos)
+    lauzhack_valid = (lauzhack_repos["has_valid_metadata"]).sum()
+
+    control_total = len(control_repos)
+    control_valid = (control_repos["has_valid_metadata"]).sum()
+
+    total_all = lauzhack_total + control_total
+    total_valid = lauzhack_valid + control_valid
+    completeness_pct = (total_valid / total_all * 100) if total_all > 0 else 0
+
+    # Create data source table
+    source_data = pd.DataFrame({
+        "Source": [
+            "LauzHack-linked repositories (2023–2025)",
+            "Curated user account repositories (control)",
+            "<b>Total</b>",
+        ],
+        "Count": [
+            lauzhack_total,
+            control_total,
+            f"<b>{total_all}</b>",
+        ],
+        "Valid with Complete Metadata": [
+            lauzhack_valid,
+            control_valid,
+            f"<b>{total_valid} ({completeness_pct:.0f}%)</b>",
+        ],
+    })
+
+    # Display as styled table
+    st.write(source_data.to_html(index=False, escape=False), unsafe_allow_html=True)
+
+    # Visual breakdown chart
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        # Stacked bar: repos by source
+        source_chart_data = pd.DataFrame({
+            "Source": ["LauzHack", "Control"],
+            "Valid (with metadata)": [lauzhack_valid, control_valid],
+            "Invalid (missing/deleted)": [lauzhack_total - lauzhack_valid, control_total - control_valid],
+        })
+
+        fig_source = px.bar(
+            source_chart_data,
+            x="Source",
+            y=["Valid (with metadata)", "Invalid (missing/deleted)"],
+            barmode="stack",
+            color_discrete_map={
+                "Valid (with metadata)": SDSC_GREEN,
+                "Invalid (missing/deleted)": ROSE,
+            },
+            labels={"value": "Count", "variable": "Status"},
+            title="Repository Completeness by Source",
+            text_auto=True,
+        )
+        fig_source.update_layout(
+            height=350,
+            margin=dict(l=20, r=20, t=60, b=20),
+            paper_bgcolor="white",
+            yaxis_title="Number of Repositories",
+            xaxis_title="",
+            legend_title="",
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig_source, use_container_width=True)
+
+    with chart_col2:
+        # Pie chart: overall completion rate
+        completion_data = pd.DataFrame({
+            "Status": ["Valid with Complete Metadata", "Missing/Deleted"],
+            "Count": [total_valid, total_all - total_valid],
+        })
+
+        fig_completion = px.pie(
+            completion_data,
+            values="Count",
+            names="Status",
+            color_discrete_map={
+                "Valid with Complete Metadata": SDSC_GREEN,
+                "Missing/Deleted": ROSE,
+            },
+            title="Overall Data Completeness",
+            hole=0.4,  # Donut chart
+        )
+        fig_completion.update_traces(textinfo="label+percent", textfont_size=12)
+        fig_completion.update_layout(
+            height=350,
+            margin=dict(l=20, r=20, t=60, b=20),
+            paper_bgcolor="white",
+        )
+        st.plotly_chart(fig_completion, use_container_width=True)
+
+    st.caption(
+        "**LauzHack repos**: Repositories explicitly linked to LauzHack project pages (213 total, 2023–2025). "
+        "**Control repos**: Random selection from participant GitHub accounts to represent non-hackathon baselines (274 total). "
+        f"Overall, **{completeness_pct:.0f}% of all repositories** have valid, complete GitHub metadata."
+    )
+
+    st.markdown("---")
+
+    # Hackathon vs Non-Hackathon distribution — all repos vs valid metadata
+    st.markdown("### Hackathon vs Non-Hackathon Distribution")
+    st.caption(
+        "Comparing the label split across all collected repos vs only those with valid GitHub metadata."
+    )
+
+    valid_df = df[df["has_valid_metadata"]]
+    all_hack = int(df["true_hackathon_repos"].sum())
+    all_non_hack = len(df) - all_hack
+    valid_hack = int(valid_df["true_hackathon_repos"].sum())
+    valid_non_hack = len(valid_df) - valid_hack
+
+    dist_data = pd.DataFrame({
+        "Dataset": [f"All Repos (n={len(df)})", f"All Repos (n={len(df)})",
+                    f"Valid Metadata (n={len(valid_df)})", f"Valid Metadata (n={len(valid_df)})"],
+        "Label": ["Hackathon", "Non-Hackathon", "Hackathon", "Non-Hackathon"],
+        "Count": [all_hack, all_non_hack, valid_hack, valid_non_hack],
+    })
+    dist_data["Percent"] = dist_data.groupby("Dataset")["Count"].transform(
+        lambda x: (x / x.sum() * 100).round(1)
+    )
+    dist_data["Text"] = dist_data.apply(lambda r: f"{r['Count']} ({r['Percent']}%)", axis=1)
+
+    fig_dist = px.bar(
+        dist_data,
+        x="Count",
+        y="Dataset",
+        color="Label",
+        orientation="h",
+        text="Text",
+        color_discrete_map={"Hackathon": HACKATHON_COLOR, "Non-Hackathon": NON_HACKATHON_COLOR},
+        barmode="stack",
+    )
+    fig_dist.update_traces(textposition="inside", insidetextanchor="middle", textfont_size=13)
+    fig_dist.update_layout(
+        height=200,
+        margin=dict(l=10, r=10, t=10, b=10),
+        paper_bgcolor="white",
+        xaxis_title="Number of Repositories",
+        yaxis_title="",
+        legend_title="",
+        hovermode="y unified",
+    )
+    st.plotly_chart(fig_dist, use_container_width=True)
+
+    st.markdown("---")
+
+    st.subheader("Language Landscape")
+    st.caption(
+        "Programming languages used across repositories. Shows whether hackathon projects "
+        "favor different languages (e.g., more Python for quick prototyping)."
+    )
+    lang_df = df.copy()
+    lang_df["primary_language"] = lang_df["primary_language"].fillna("Unknown").replace("", "Unknown")
+    lang_df["label"] = lang_df["true_hackathon_repos"].map({True: "Hackathon", False: "Non-Hackathon"})
+
+    lang_counts = (
+        lang_df.groupby(["primary_language", "label"]).size().reset_index(name="count")
+    )
+    top_langs = lang_counts.groupby("primary_language")["count"].sum().nlargest(12).index
+    lang_counts = lang_counts[lang_counts["primary_language"].isin(top_langs)]
+
+    fig_lang = px.treemap(
+        lang_counts,
+        path=["label", "primary_language"],
+        values="count",
+        color="label",
+        color_discrete_map={"Hackathon": HACKATHON_COLOR, "Non-Hackathon": NON_HACKATHON_COLOR},
+    )
+    fig_lang.update_layout(height=450, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="white")
+    fig_lang.update_traces(textinfo="label+value", textfont_size=13)
+    st.plotly_chart(fig_lang, use_container_width=True)
+
     # LauzHack projects vs repositories
+    st.markdown("---")
     st.markdown("### LauzHack Repositories by Year")
 
     # Projects summary stats
@@ -748,34 +1044,6 @@ def render_introduction(df: pd.DataFrame):
     )
     st.plotly_chart(fig_repos, use_container_width=True)
 
-    st.markdown("---")
-
-    st.subheader("Language Landscape")
-    st.caption(
-        "Programming languages used across repositories. Shows whether hackathon projects "
-        "favor different languages (e.g., more Python for quick prototyping)."
-    )
-    lang_df = df.copy()
-    lang_df["primary_language"] = lang_df["primary_language"].fillna("Unknown").replace("", "Unknown")
-    lang_df["label"] = lang_df["true_hackathon_repos"].map({True: "Hackathon", False: "Non-Hackathon"})
-
-    lang_counts = (
-        lang_df.groupby(["primary_language", "label"]).size().reset_index(name="count")
-    )
-    top_langs = lang_counts.groupby("primary_language")["count"].sum().nlargest(12).index
-    lang_counts = lang_counts[lang_counts["primary_language"].isin(top_langs)]
-
-    fig_lang = px.treemap(
-        lang_counts,
-        path=["label", "primary_language"],
-        values="count",
-        color="label",
-        color_discrete_map={"Hackathon": HACKATHON_COLOR, "Non-Hackathon": NON_HACKATHON_COLOR},
-    )
-    fig_lang.update_layout(height=450, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="white")
-    fig_lang.update_traces(textinfo="label+value", textfont_size=13)
-    st.plotly_chart(fig_lang, use_container_width=True)
-
 
 # ---------------------------------------------------------------------------
 # Act 2: Feature Engineering & EDA
@@ -834,6 +1102,17 @@ def render_features(df: pd.DataFrame):
         key="feature_selector"
     )
     selected_col = feature_options[selected_feature_name]
+
+    # Display feature definition and calculation
+    feature_info = FEATURE_METADATA[selected_feature_name]
+    with st.expander(f"ℹ️ What is '{selected_feature_name}'?"):
+        st.markdown(f"**Definition:** {feature_info['definition']}")
+        if feature_info["is_derived"]:
+            st.markdown(f"📐 **Derived Feature** — {feature_info['calculation']}")
+        else:
+            st.markdown("📊 **Raw Feature** — Collected directly from GitHub")
+
+    st.markdown("")  # Add spacing
 
     fig_box = go.Figure()
 
@@ -978,10 +1257,25 @@ def render_features(df: pd.DataFrame):
     significant = fisher_df[fisher_df["significant_fdr"]] if "significant_fdr" in fisher_df.columns else fisher_df
     meaningful = significant[significant["log2_odds_ratio"].abs() >= 0.5]
 
-    top_n = min(25, len(meaningful))  # Adaptive: show up to 25, or fewer if not enough meaningful topics
-    n_half = top_n // 2
-    top_concepts = pd.concat([meaningful.head(n_half + 1), meaningful.tail(n_half)])
-    top_concepts = top_concepts.drop_duplicates(subset="concept").sort_values("log2_odds_ratio")
+    # Split into positive (hackathon-associated) and negative (non-hackathon) separately,
+    # then take the strongest from each side — avoids filling quota with near-zero concepts
+    n_half = 12
+    top_hackathon = (
+        meaningful[meaningful["log2_odds_ratio"] > 0]
+        .sort_values("log2_odds_ratio", ascending=False)
+        .head(n_half)
+    )
+    top_non_hackathon = (
+        meaningful[meaningful["log2_odds_ratio"] < 0]
+        .sort_values("log2_odds_ratio", ascending=True)
+        .head(n_half)
+    )
+    top_concepts = (
+        pd.concat([top_non_hackathon, top_hackathon])
+        .drop_duplicates(subset="concept")
+        .sort_values("log2_odds_ratio", ascending=True)  # bottom = strongest non-hackathon, top = strongest hackathon
+    )
+    top_n = len(top_concepts)
 
     fig_fisher = px.bar(
         top_concepts,
@@ -1291,7 +1585,7 @@ def render_methods(df: pd.DataFrame):
             <p style='margin:8px 0 0 0; color:#475569;'>
                 This method measures how strongly each characteristic is linked to being a
                 hackathon repo, then combines them into a single score. If a repo's combined
-                score is above 0.5 (on a 0-to-1 scale), we predict "hackathon." It's data-driven
+                score is above {CORR_THRESHOLD} (on a 0-to-1 scale), we predict "hackathon." It's data-driven
                 but assumes each characteristic contributes independently — which isn't always true.
             </p>
         </div>
@@ -1322,7 +1616,7 @@ def render_methods(df: pd.DataFrame):
                 color_discrete_map={"Hackathon": HACKATHON_COLOR, "Non-Hackathon": NON_HACKATHON_COLOR},
                 labels={"corr_weighted_score": "Correlation-Weighted Score", "color": ""},
             )
-            fig_score.add_vline(x=0.5, line_dash="dash", line_color=ROSE, line_width=2, annotation_text="Threshold = 0.5")
+            fig_score.add_vline(x=CORR_THRESHOLD, line_dash="dash", line_color=ROSE, line_width=2, annotation_text=f"Threshold = {CORR_THRESHOLD}")
             fig_score.update_layout(height=380, plot_bgcolor="#fafcf8", paper_bgcolor="white")
             st.plotly_chart(fig_score, use_container_width=True)
 
@@ -1442,15 +1736,21 @@ def render_verdict(df: pd.DataFrame):
     valid = df[df["has_valid_metadata"]].copy()
     y_true = valid["true_hackathon_repos"].astype(int)
 
+    # Ensemble: majority vote (≥2 of 3 methods agree)
+    vote_cols = ["repo_predicted_flag", "corr_weighted_flag", "ml_predicted_flag"]
+    ensemble_vote_count = valid[vote_cols].astype(int).sum(axis=1)
+    valid["ensemble_predicted_flag"] = ensemble_vote_count >= 2
+
     methods = {
-        "Naive Rule-Based": valid["repo_predicted_flag"].astype(int),
-        "Correlation-Weighted": valid["corr_weighted_flag"].astype(int),
-        "Random Forest": valid["ml_predicted_flag"].astype(int),
+        "Naive Rule-Based": (valid["repo_predicted_flag"].astype(int), valid.get("repo_predicted_score")),
+        "Correlation-Weighted": (valid["corr_weighted_flag"].astype(int), valid.get("corr_weighted_score")),
+        "Random Forest": (valid["ml_predicted_flag"].astype(int), valid.get("ml_predicted_proba")),
+        "Majority Vote (Ensemble)": (valid["ensemble_predicted_flag"].astype(int), ensemble_vote_count),
     }
 
     all_metrics = {}
-    for name, y_pred in methods.items():
-        all_metrics[name] = compute_metrics(y_true, y_pred)
+    for name, (y_pred, y_score) in methods.items():
+        all_metrics[name] = compute_metrics(y_true, y_pred, y_score)
 
     # Radar chart
     st.subheader("Performance Radar")
@@ -1460,9 +1760,10 @@ def render_verdict(df: pd.DataFrame):
         "repos, what % did we correctly identify as non-hackathon (recall for the negative class)."
     )
     categories = ["Accuracy", "Precision", "Recall", "F1", "Specificity"]
+    table_columns = ["Accuracy", "Precision", "Recall", "F1", "Specificity", "AUC-ROC", "MCC"]
 
     fig_radar = go.Figure()
-    dashes = ["solid", "dash", "dot"]
+    dashes = ["solid", "dash", "dot", "dashdot"]
     for idx, (name, metrics) in enumerate(all_metrics.items()):
         values = [metrics[c] for c in categories] + [metrics[categories[0]]]
         fig_radar.add_trace(
@@ -1500,9 +1801,9 @@ def render_verdict(df: pd.DataFrame):
         "**Top-right** = repos wrongly called 'hackathon' (false alarms). "
         "**Bottom-left** = real hackathon repos that were missed. Bigger numbers on the diagonal = better."
     )
-    cols = st.columns(3)
-    color_scales = ["Oranges", "Purples", "Greens"]
-    for idx, (name, y_pred) in enumerate(methods.items()):
+    cols = st.columns(4)
+    color_scales = ["Oranges", "Purples", "Greens", "RdPu"]
+    for idx, (name, (y_pred, _)) in enumerate(methods.items()):
         with cols[idx]:
             f1 = all_metrics[name]["F1"]
             fig = plot_confusion_matrix(y_true, y_pred, f"{name}\nF1={f1:.1%}", color_scales[idx])
@@ -1513,18 +1814,21 @@ def render_verdict(df: pd.DataFrame):
     # Metrics table
     st.subheader("Metrics Summary")
     metrics_table = pd.DataFrame(all_metrics).T
-    metrics_table = metrics_table[categories]
+    metrics_table = metrics_table[table_columns]
+    metrics_table.index.name = "Method"
 
     # Style the table
     def highlight_best(s):
-        is_max = s == s.max()
+        is_max = s == s.nanmax() if hasattr(s, "nanmax") else s == s.max()
         return ["background-color: #f3f7ea; font-weight: bold; color: #5a8020" if v else "" for v in is_max]
 
-    styled = metrics_table.style.format("{:.1%}").apply(highlight_best)
+    styled = metrics_table.style.format("{:.1%}", na_rep="—").apply(highlight_best)
     st.dataframe(styled, use_container_width=True, height=160)
     st.caption(
-        "Highlighted cells show the best score per column. **F1 score** matters most here because "
-        "we want to balance catching hackathon repos (recall) without too many false alarms (precision)."
+        "Highlighted cells show the best score per column. "
+        "**AUC-ROC** measures ranking quality using probability scores (higher = better separation). "
+        "**MCC** (Matthews Correlation Coefficient, rescaled 0–1) is robust to class imbalance — 1.0 is perfect, 0.5 is random. "
+        "**F1** balances catching hackathon repos (recall) vs. false alarms (precision)."
     )
 
     st.markdown("---")
@@ -2165,7 +2469,7 @@ def render_predict():
         st.caption("🏷️ Concept enrichment skipped — check the box above to enable")
 
     # Method-by-method results
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         _render_method_card(
@@ -2183,7 +2487,7 @@ def render_predict():
             "2. Statistical Weighting",
             corr["flag"],
             f"Score: {corr['score']:.2f}",
-            "Threshold: 0.5",
+            f"Threshold: {CORR_THRESHOLD}",
             SDSC_BLUE,
             "#eef0f8",
             "#e1e4f0",
@@ -2198,6 +2502,17 @@ def render_predict():
             SDSC_GREEN,
             "#f3f7ea",
             "#e6edcc",
+        )
+
+    with col4:
+        _render_method_card(
+            "4. Majority Vote (Ensemble)",
+            votes >= 2,
+            f"Votes: {votes}/3",
+            "≥2 methods must agree",
+            ROSE,
+            "#fef2f2",
+            "#fde8e8",
         )
 
     # Signal breakdown
@@ -2281,7 +2596,20 @@ def main():
         )
 
     # Load data
-    df = load_predictions()
+    try:
+        df = load_predictions()
+    except RuntimeError as e:
+        st.error(f"⚠️ **Could not load prediction data**\n\n{e}")
+        with st.expander("Troubleshooting"):
+            st.markdown(
+                "**Option 1: Set Streamlit Cloud secrets** — add `HF_REPO_ID` and `HF_TOKEN` "
+                "in your app's Secrets settings (Settings → Secrets).\n\n"
+                "**Option 2: Generate data locally** — run "
+                "`src/hackathon_analysis/data_analysis/repo_analysis.ipynb` end-to-end "
+                "to produce `repo_metadata_with_predictions.csv` and upload it to Hugging Face."
+            )
+        st.stop()
+        return
 
     # Route to section
     if section.startswith("1"):
