@@ -66,8 +66,9 @@ def upload_to_hugging_face(
 
 def load_huggingface_dataset(
     repo_id: str,
-    split: str | list[str] = "train",
+    split: str | list[str] | None = "train",
     cache_dir: str | None = None,
+    token: str | None = None,
     **kwargs,
 ):
     """
@@ -76,7 +77,9 @@ def load_huggingface_dataset(
     Args:
         repo_id: Name of the dataset repo on Hugging Face (e.g., "sdsco/example").
         split: Split name or list of splits to retrieve (default "train").
+            Pass None to load all splits as a DatasetDict.
         cache_dir: Optional cache directory to use for downloaded data.
+        token: HuggingFace auth token for private repos. Falls back to HF_TOKEN env var.
         **kwargs: Additional keyword args forwarded to :func:`datasets.load_dataset`.
 
     Returns:
@@ -91,10 +94,14 @@ def load_huggingface_dataset(
         raise RuntimeError(
             "datasets library is required to load Hugging Face datasets") from e
 
-    load_args = {"path": repo_id, "split": split}
+    resolved_token = token or os.getenv("HF_TOKEN")
+    load_args: dict = {"path": repo_id}
+    if split is not None:
+        load_args["split"] = split
     if cache_dir:
         load_args["cache_dir"] = cache_dir
-    # merge kwargs
+    if resolved_token:
+        load_args["token"] = resolved_token
     load_args.update(kwargs)
 
     return load_dataset(**load_args)

@@ -296,10 +296,15 @@ def load_predictions() -> pd.DataFrame:
             repo = get_hf_repo_from_env()
             logging.info("   HF_REPO_ID: %s", repo.repo_id)
 
-            hf_dataset = load_huggingface_dataset(
-                repo_id=repo.repo_id,
-                split="train",
-            )
+            try:
+                hf_dataset = load_huggingface_dataset(repo_id=repo.repo_id, split="train")
+            except Exception:
+                # Fallback: load all splits and pick the first available
+                dataset_dict = load_huggingface_dataset(repo_id=repo.repo_id, split=None)
+                first_split = next(iter(dataset_dict))
+                logging.info("   'train' split not found; using split '%s'", first_split)
+                hf_dataset = dataset_dict[first_split]
+
             df = hf_dataset.to_pandas()
             logging.info("✓ Loaded %d repos from Hugging Face Hub", len(df))
 
@@ -307,11 +312,12 @@ def load_predictions() -> pd.DataFrame:
             logging.error(
                 "Data loading failed: local=%s missing, HF=%s",
                 local_csv.exists(),
-                str(hf_error)[:50]
+                str(hf_error),
             )
             raise RuntimeError(
-                f"Could not load data from local file or Hugging Face Hub. "
-                f"HF error: {str(hf_error)[:100]}"
+                f"Could not load data from Hugging Face Hub "
+                f"(repo: {get_hf_repo_from_env().repo_id}). "
+                f"Error: {hf_error}"
             ) from hf_error
 
     # Parse stringified lists
@@ -2615,21 +2621,15 @@ def main():
     try:
         df = load_predictions()
     except RuntimeError as e:
-        # Display clean error message instead of ugly exception
-        st.error(
-            "⚠️ **Could not load prediction data**\n\n"
-            "The dashboard needs data to display. You have two options:\n\n"
-            "**Option 1: Generate Data Locally (Recommended)** ✅\n"
-            "1. Open the notebook: `src/hackathon_analysis/data_analysis/repo_analysis.ipynb`\n"
-            "2. Run all cells end-to-end\n"
-            "3. This generates `repo_metadata_with_predictions.csv` locally and uploads to Hugging Face\n\n"
-            "**Option 2: Use Hugging Face Hub** 🤗\n"
-            "1. Set these environment variables in `.env`:\n"
-            "   - `HF_REPO_ID=your_hf_repo_id`\n"
-            "   - `HF_TOKEN=your_hf_token`\n"
-            "2. Restart the dashboard—it will auto-download data\n\n"
-            "📖 **Need help?** Check the README for setup instructions."
-        )
+        st.error(f"⚠️ **Could not load prediction data**\n\n{e}")
+        with st.expander("Troubleshooting"):
+            st.markdown(
+                "**Option 1: Set Streamlit Cloud secrets** — add `HF_REPO_ID` and `HF_TOKEN` "
+                "in your app's Secrets settings (Settings → Secrets).\n\n"
+                "**Option 2: Generate data locally** — run "
+                "`src/hackathon_analysis/data_analysis/repo_analysis.ipynb` end-to-end "
+                "to produce `repo_metadata_with_predictions.csv` and upload it to Hugging Face."
+            )
         st.stop()
         return
 
